@@ -27792,6 +27792,230 @@ BUILDIN_FUNC(mesitemicon){
 	return SCRIPT_CMD_SUCCESS;
 }
 
+BUILDIN_FUNC(charmamount)
+{
+	map_session_data *sd;
+	if (script_rid2sd(sd)){
+		if( current_charm_index == -1 ){
+			script_pushint(st, 0);
+			return SCRIPT_CMD_FAILURE;
+		}
+
+		script_pushint(st,sd->inventory.u.items_inventory[current_charm_index].amount);
+
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(getcharmrefine)
+{
+	TBL_PC *sd;
+	if (script_rid2sd(sd)){
+		if( current_charm_index == -1 ){
+			script_pushint(st, 0);
+			return SCRIPT_CMD_FAILURE;
+		}
+
+		script_pushint(st,sd->inventory.u.items_inventory[current_charm_index].refine);
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(getcharmgrade)
+{
+	TBL_PC *sd;
+	if (script_rid2sd(sd)){
+		if( current_charm_index == -1 ){
+			script_pushint(st, 0);
+			return SCRIPT_CMD_FAILURE;
+		}
+
+		script_pushint(st,sd->inventory.u.items_inventory[current_charm_index].enchantgrade);
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+int get_charm_highest_refine(map_session_data *sd, t_itemid nameid)
+{
+	if(!sd)
+		return 0;
+
+	int16 rerefine_level = 0;
+
+	for (int i = 0; i < MAX_INVENTORY; i++){
+
+		if (sd->inventory.u.items_inventory[i].nameid == 0 || sd->inventory.u.items_inventory[i].nameid != nameid)
+			continue;
+
+		if(sd->inventory.u.items_inventory[i].refine >= rerefine_level)
+			rerefine_level = sd->inventory.u.items_inventory[i].refine;
+	}
+
+	return rerefine_level;
+}
+
+BUILDIN_FUNC(getcharmhrefine)
+{
+	TBL_PC *sd;
+	if (script_rid2sd(sd)){
+		if( current_charm_index == -1 ){
+			script_pushint(st, 0);
+			return SCRIPT_CMD_FAILURE;
+		}
+
+		int16 refine = 0;
+
+		refine = get_charm_highest_refine(sd, sd->inventory.u.items_inventory[current_charm_index].nameid);
+
+		script_pushint(st,refine);
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+int get_charm_highest_grade(map_session_data *sd, t_itemid nameid)
+{
+	if(!sd)
+		return 0;
+
+	int16 grade = 0;
+
+	for (int i = 0; i < MAX_INVENTORY; i++){
+
+		if (sd->inventory.u.items_inventory[i].nameid == 0 || sd->inventory.u.items_inventory[i].nameid != nameid)
+			continue;
+
+		if(sd->inventory.u.items_inventory[i].enchantgrade >= grade)
+			grade = sd->inventory.u.items_inventory[i].enchantgrade;
+	}
+
+	return grade;
+}
+
+BUILDIN_FUNC(getcharmhgrade)
+{
+	TBL_PC *sd;
+	if (script_rid2sd(sd)){
+		if( current_charm_index == -1 ){
+			script_pushint(st, 0);
+			return SCRIPT_CMD_FAILURE;
+		}
+
+		int16 grade = 0;
+
+		grade = get_charm_highest_grade(sd, sd->inventory.u.items_inventory[current_charm_index].nameid);
+
+		script_pushint(st,grade);
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(getcharmhcomrefine)
+{
+	TBL_PC *sd;
+	if (script_rid2sd(sd)){
+
+		t_itemid nameid = script_getnum(st,2);
+
+		struct item_data *id = itemdb_search(nameid);
+
+		if(!id){
+			script_pushint(st,0);
+			return SCRIPT_CMD_SUCCESS;
+		}
+
+		int refine = 0;
+
+		refine = get_charm_highest_refine(sd, nameid);
+
+		script_pushint(st,refine);
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(getcharmhcomgrade)
+{
+	TBL_PC *sd;
+	if (script_rid2sd(sd)){
+
+		t_itemid nameid = script_getnum(st,2);
+
+		struct item_data *id = itemdb_search(nameid);
+
+		if(!id){
+			script_pushint(st,0);
+			return SCRIPT_CMD_SUCCESS;
+		}
+
+		int grade = 0;
+
+		grade = get_charm_highest_grade(sd, nameid);
+
+		script_pushint(st,grade);
+	}else
+		script_pushint(st,0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
+static int script_counttype_sub(map_session_data *sd, int type, t_itemid nameid, uint16 refine, uint16 grade)
+{
+	nullpo_retr(-1, sd);
+
+	int count = 0;
+
+	for (int i = 0; i < MAX_INVENTORY; i++) {
+
+		if(sd->inventory.u.items_inventory[i].nameid == 0 || sd->inventory_data[i]->type != type)
+			continue;
+
+		if(sd->inventory.u.items_inventory[i].nameid != nameid)
+			continue;
+
+		if (sd->inventory.u.items_inventory[i].refine == refine && sd->inventory.u.items_inventory[i].enchantgrade == grade)
+			count += sd->inventory.u.items_inventory[i].amount;
+	}
+
+	return count;
+}
+
+BUILDIN_FUNC(counttype)
+{
+	map_session_data *sd;
+
+	if ( !script_rid2sd(sd) ) {
+		script_pushint(st, 0);
+		return SCRIPT_CMD_FAILURE;
+	}
+
+	int type = script_getnum(st, 2);
+	t_itemid nameid = script_getnum(st, 3);
+	uint16 refine = 0;
+	uint16 grade = 0;
+
+	std::shared_ptr<item_data> id = item_db.find(nameid);
+
+	if (!id) {
+		ShowError("counttype: Invalid item id '%d'.\n", nameid); // returns string, regardless of what it was
+		script_pushint(st, 0);
+		return SCRIPT_CMD_FAILURE;
+	}
+
+	if(script_hasdata(st,4))
+		refine = script_getnum(st, 4);
+
+	if(script_hasdata(st,5))
+		grade = script_getnum(st, 5);
+
+	int count = script_counttype_sub(sd, type, nameid, refine, grade);
+	script_pushint(st, count);
+	return SCRIPT_CMD_SUCCESS;
+}
+
 #include <custom/script.inc>
 
 // declarations that were supposed to be exported from npc_chat.cpp
@@ -28567,6 +28791,18 @@ struct script_function buildin_func[] = {
 	BUILDIN_DEF2(permission_add, "permission_remove", "i?"),
 
 	BUILDIN_DEF( mesitemicon, "v??" ),
+	
+	BUILDIN_DEF(charmamount, ""),
+
+	BUILDIN_DEF(getcharmrefine, ""),
+	BUILDIN_DEF(getcharmgrade, ""),
+	BUILDIN_DEF(getcharmhrefine, ""),
+	BUILDIN_DEF(getcharmhgrade, ""),
+
+	BUILDIN_DEF(getcharmhcomrefine, "i"),
+	BUILDIN_DEF(getcharmhcomgrade, "i"),
+
+	BUILDIN_DEF(counttype, "ii??"),
 
 #include <custom/script_def.inc>
 
