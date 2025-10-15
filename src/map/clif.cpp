@@ -115,13 +115,6 @@ static inline int32 itemtype(t_itemid nameid) {
 		else
 			return IT_ARMOR;
 	}
-
-	if(type == IT_CHARM)
-		return IT_ETC;
-
-	if(type == IT_CHARM_UPGRADE)
-		return IT_ARMOR;
-
 	return ( type == IT_PETEGG ) ? IT_ARMOR : type;
 }
 
@@ -22748,9 +22741,6 @@ void clif_parse_refineui_refine( int32 fd, map_session_data* sd ){
 		clif_misceffect( *sd, NOTIFYEFFECT_REFINE_FAILURE );
 		achievement_update_objective( sd, AG_ENCHANT_FAIL, 1, 1 );
 	}
-
-	if( id->type == IT_CHARM_UPGRADE)
-		status_calc_pc(sd, SCO_NONE);
 #endif
 }
 
@@ -23938,8 +23928,6 @@ void clif_parse_enchantgrade_add( int32 fd, map_session_data* sd ){
 		level = sd->inventory_data[index]->weapon_level;
 	}else if( sd->inventory_data[index]->type == IT_ARMOR ){
 		level = sd->inventory_data[index]->armor_level;
-	}else if ( sd->inventory_data[index]->type == IT_CHARM_UPGRADE) {
-		level = 1;
 	}
 
 	const auto& enchantgradelevels = enchantgrade->levels.find( level );
@@ -24029,8 +24017,6 @@ void clif_parse_enchantgrade_start( int32 fd, map_session_data* sd ){
 		level = sd->inventory_data[index]->weapon_level;
 	}else if( sd->inventory_data[index]->type == IT_ARMOR ){
 		level = sd->inventory_data[index]->armor_level;
-	}else if ( sd->inventory_data[index]->type == IT_CHARM_UPGRADE) {
-		level = 1;
 	}
 
 	const auto& enchantgradelevels = enchantgrade->levels.find( level );

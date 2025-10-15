@@ -3751,8 +3751,6 @@
 	export_constant(IT_DELAYCONSUME);
 	export_constant(IT_SHADOWGEAR);
 	export_constant(IT_CASH);
-	export_constant(IT_CHARM);
-	export_constant(IT_CHARM_UPGRADE);
 
 	/* weapon types */
 	export_constant(W_FIST);
@@ -10627,7 +10625,6 @@
 	export_constant(REFINE_TYPE_WEAPON);
 	export_constant(REFINE_TYPE_SHADOW_ARMOR);
 	export_constant(REFINE_TYPE_SHADOW_WEAPON);
-	export_constant(REFINE_TYPE_CHARM_UPGRADE);
 
 	/* autospell flags */
 	export_constant(AUTOSPELL_FORCE_SELF);

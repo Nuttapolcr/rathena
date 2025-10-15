@@ -6050,13 +6050,6 @@ enum e_additem_result pc_additem(map_session_data *sd,struct item *item,int32 am
 		return ADDITEM_STACKLIMIT;
 	}
 
-	if(sd->item3.is_item3){
-		item->refine = sd->item3.refine;
-		item->enchantgrade = sd->item3.grade;
-		sd->item3 = {};
-		sd->item3.is_item3 = false;
-	}
-
 	w = id->weight*amount;
 	if(sd->weight + w > sd->max_weight)
 		return ADDITEM_OVERWEIGHT;
@@ -6136,9 +6129,6 @@ enum e_additem_result pc_additem(map_session_data *sd,struct item *item,int32 am
 	achievement_update_objective(sd, AG_GET_ITEM, 1, id->value_sell);
 	pc_show_questinfo(sd);
 
-	if(id->type == IT_CHARM || id->type == IT_CHARM_UPGRADE)
-		status_calc_pc(sd, SCO_NONE);
-
 	return ADDITEM_SUCCESS;
 }
 
@@ -6161,8 +6151,6 @@ char pc_delitem(map_session_data *sd,int32 n,int32 amount,int32 type, int16 reas
 
 	log_pick_pc(sd, log_type, -amount, &sd->inventory.u.items_inventory[n]);
 
-	struct item_data *id = itemdb_search(sd->inventory.u.items_inventory[n].nameid);
-
 	sd->inventory.u.items_inventory[n].amount -= amount;
 	sd->weight -= sd->inventory_data[n]->weight*amount ;
 	if( sd->inventory.u.items_inventory[n].amount <= 0 ){
@@ -6177,9 +6165,6 @@ char pc_delitem(map_session_data *sd,int32 n,int32 amount,int32 type, int16 reas
 		clif_updatestatus(*sd,SP_WEIGHT);
 
 	pc_show_questinfo(sd);
-
-	if(id->type == IT_CHARM || id->type == IT_CHARM_UPGRADE)
-		status_calc_pc(sd, SCO_NONE);
 
 	return 0;
 }

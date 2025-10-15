@@ -3365,7 +3365,6 @@ struct item_data
 	struct script_code *script;	//Default script for everything.
 	struct script_code *equip_script;	//Script executed once when equipping.
 	struct script_code *unequip_script;//Script executed once when unequipping.
-	struct script_code *charm_script;
 	struct {
 		unsigned available : 1;
 		uint32 no_equip;
@@ -3415,18 +3414,11 @@ struct item_data
 			this->unequip_script = nullptr;
 		}
 
-		if (this->charm_script){
-			script_free_code(this->charm_script);
-			this->charm_script = nullptr;
-		}
-
 		this->combos.clear();
 	}
 
 	bool isStackable();
 	int32 inventorySlotNeeded(int32 quantity);
-	int max_charm_stack;
-	int max_charm_upgrade_stack;
 };
 
 class ItemDatabase : public TypesafeCachedYamlDatabase<t_itemid, item_data> {
@@ -3738,15 +3730,6 @@ bool itemdb_isNoEquip(struct item_data *id, uint16 m);
 bool itemdb_parse_roulette_db(void);
 
 void itemdb_gen_itemmoveinfo();
-
-struct s_charm_unique {
-	t_itemid namid;
-	int count;
-};
-
-bool item_is_charm(t_itemid nameid);
-int item_charm_max_stack(t_itemid name, int amount);
-bool charm_upgrade_check_limit(std::vector<t_itemid> vec, t_itemid nameid);
 
 void itemdb_reload(void);
 

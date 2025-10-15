@@ -235,8 +235,6 @@ enum item_types {
 	IT_DELAYCONSUME,//11
 	IT_SHADOWGEAR,  //12
 	IT_CASH = 18,
-	IT_CHARM,
-	IT_CHARM_UPGRADE,
 	IT_MAX
 };
 

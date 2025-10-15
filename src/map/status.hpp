@@ -72,7 +72,6 @@ enum e_refine_type : uint16{
 	REFINE_TYPE_WEAPON,
 	REFINE_TYPE_SHADOW_ARMOR,
 	REFINE_TYPE_SHADOW_WEAPON,
-	REFINE_TYPE_CHARM_UPGRADE,
 	REFINE_TYPE_MAX
 };
 
@@ -2953,7 +2952,6 @@ extern int16 current_equip_item_index;
 extern uint32 current_equip_combo_pos;
 extern int32 current_equip_card_id;
 extern int16 current_equip_opt_index;
-extern short current_charm_index;
 
 //Status change option definitions (options are what makes status changes visible to chars
 //who were not on your field of sight when it happened)

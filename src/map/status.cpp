@@ -71,7 +71,6 @@ uint32 current_equip_combo_pos; /// For combo items we need to save the position
 int32 current_equip_card_id; /// To prevent card-stacking (from jA) [Skotlex]
 // We need it for new cards 15 Feb 2005, to check if the combo cards are insrerted into the CURRENT weapon only to avoid cards exploits
 int16 current_equip_opt_index; /// Contains random option index of an equipped item. [Secret]
-short current_charm_index;
 
 uint16 SCDisabled[SC_MAX]; ///< List of disabled SC on map zones. [Cydh]
 
@@ -474,11 +473,6 @@ bool RefineDatabase::calculate_refine_info( const struct item_data& data, e_refi
 		level = data.armor_level;
 
 		return true;
-	}else if( data.type == IT_CHARM_UPGRADE){
-		refine_type = REFINE_TYPE_CHARM_UPGRADE;
-		level = 1;
-
-		return true;
 	}else if( data.type == IT_SHADOWGEAR ){
 		if( data.equip == EQP_SHADOW_WEAPON ){
 			refine_type = REFINE_TYPE_SHADOW_WEAPON;
@@ -618,8 +612,6 @@ uint64 EnchantgradeDatabase::parseBodyNode( const ryml::NodeRef& node ){
 		itemtype_maxlevel = MAX_WEAPON_LEVEL;
 	}else if( itemtype == IT_ARMOR ){
 		itemtype_maxlevel = MAX_ARMOR_LEVEL;
-	}else if( itemtype == IT_CHARM_UPGRADE ){
-		itemtype_maxlevel = 1;
 	}else{
 		this->invalidWarning( node["Type"], "Item type \"%s\" is not supported.\n", itemtype_constant.c_str() );
 		return 0;
@@ -980,8 +972,6 @@ std::shared_ptr<s_enchantgradelevel> EnchantgradeDatabase::findCurrentLevelInfo(
 		level = data.weapon_level;
 	}else if( data.type == IT_ARMOR ){
 		level = data.armor_level;
-	}else if( data.type == IT_CHARM_UPGRADE ){
-		level = 1;
 	}
 
 	const auto& enchantgradelevels = enchantgrade->levels.find( level );
@@ -3898,31 +3888,6 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
 		pet_delautobonus(*sd, sd->pd->autobonus, true);
 		pet_delautobonus(*sd, sd->pd->autobonus2, true);
 		pet_delautobonus(*sd, sd->pd->autobonus3, true);
-	}
-
-	// --------- Charm ---------
-	current_charm_index = -1;
-	std::vector<t_itemid> charm = {};
-	for (i = 0; i < MAX_INVENTORY; i++){
-
-		current_charm_index = i;
-
-		if (sd->inventory.u.items_inventory[i].nameid == 0 || !item_is_charm(sd->inventory.u.items_inventory[i].nameid))
-			continue;
-
-		struct item_data *charm_info = itemdb_search(sd->inventory.u.items_inventory[i].nameid);
-
-		if(charm_info->type == IT_CHARM_UPGRADE && charm_info->max_charm_upgrade_stack && charm_upgrade_check_limit(charm, charm_info->nameid))
-			charm.push_back(charm_info->nameid);
-		else if (charm_info->type == IT_CHARM_UPGRADE && charm_info->max_charm_upgrade_stack && !charm_upgrade_check_limit(charm, charm_info->nameid))
-			continue;
-
-		int max_effect = item_charm_max_stack(sd->inventory.u.items_inventory[i].nameid,sd->inventory.u.items_inventory[i].amount);
-
-		if (charm_info && charm_info->charm_script){
-            for (int j = 0; j < max_effect; ++j)
-                run_script(charm_info->charm_script, 0, sd->id, 0);
-			}
 	}
 
 	// Parse equipment
