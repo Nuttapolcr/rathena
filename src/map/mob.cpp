@@ -3306,6 +3306,49 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				}
 			}
 
+			for (const auto &it : sd->add_drop_extra) {
+
+				if (!&it || (!it.nameid && !it.group))
+					continue;
+
+				if(it.level && md->level < it.level)
+					continue;
+			
+				if(it.race != RC_ALL && it.race != status->race)
+					continue;
+			
+				if(it.class_ != CLASS_ALL && it.class_ != status->class_)
+					continue;
+			
+				//Check if the bonus item drop rate should be multiplied with mob level/10 [Lupus]
+				if (it.rate < 0) {
+					//It's negative, then it should be multiplied. with mob_level/10
+					//rate = base_rate * (mob_level/10) + 1
+					drop_rate = (-it.rate) * md->level / 10 + 1;
+					drop_rate = cap_value(drop_rate, max(battle_config.item_drop_adddrop_min,1), min(battle_config.item_drop_adddrop_max,10000));
+				}
+				else
+					//it's positive, then it goes as it is
+					drop_rate = it.rate;
+
+				if (rnd()%10000 >= drop_rate)
+					continue;
+
+				std::shared_ptr<s_mob_drop> mobdrop = std::make_shared<s_mob_drop>();
+				mobdrop->nameid = it.nameid;
+
+				std::shared_ptr<s_item_group_entry> entry = nullptr;
+
+				if(it.group)
+					entry = itemdb_group.get_random_entry(it.group, 1, GROUP_ALGORITHM_DROP);
+
+				if(it.is_group && entry)
+					mobdrop->nameid = entry->nameid;
+
+				std::shared_ptr<s_item_drop> ditem = mob_setdropitem(mobdrop, 1, md->mob_id);
+				mob_item_drop( md, dlist, ditem, 0, drop_rate, homkillonly || merckillonly );
+			}
+
 			// process script-granted zeny bonus (get_zeny_num) [Skotlex]
 			if( sd->bonus.get_zeny_num && rnd()%100 < sd->bonus.get_zeny_rate ) {
 				i = sd->bonus.get_zeny_num > 0 ? sd->bonus.get_zeny_num : -md->level * sd->bonus.get_zeny_num;

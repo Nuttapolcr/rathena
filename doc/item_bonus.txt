@@ -510,3 +510,12 @@ bonus bClassChange,n;     		Gives a n/100% chance to change the attacked monster
 bonus bAddStealRate,n;    		Increases success rate of Steal skill by n/100%
 bonus bNoMadoFuel;			Nullify Magic Gear Fuel requirement for skills.
 bonus bNoWalkDelay;				Give infinite Endure.
+
+/////////////////////////////// custom ///////////////////////////////
+
+bonus3 bAddMonsterLevelDropItem,<level>,<item id>,<chance n/100%>;
+bonus4 bAddMonsterLevelDropItemRace,<race>,<level>,<item id>,<chance n/100%>;
+bonus4 bAddMonsterLevelDropItemClass,<class>,<level>,<item id>,<chance n/100%>;
+bonus3 bAddMonsterLevelDropGroup,<level>,<Group ID>,<chance n/100%>;
+bonus4 bAddMonsterLevelDropGroupRace,<race>,<level>,<Group ID>,<chance n/100%>;
+bonus4 bAddMonsterLevelDropGroupClass,<class>,<level>,<Group ID>,<chance n/100%>;

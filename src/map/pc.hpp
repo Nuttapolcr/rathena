@@ -329,6 +329,16 @@ struct s_add_drop {
 	uint16 class_; ///Target Class, bitwise value of 1<<x
 };
 
+struct s_add_drop2 {
+	t_itemid nameid; ///Item ID
+	unsigned short group;
+	int32 level;
+	int32 rate;
+	short race; ///Target Race, bitwise value of 1<<x. if < 0 means Monster ID
+	unsigned short class_; ///Target Class, bitwise value of 1<<x
+	bool is_group;
+};
+
 struct s_vanish_bonus {
 	int16 rate; // 1000 = 100%
 	int16 per; // 100 = 100%
@@ -611,6 +621,7 @@ public:
 	std::vector<s_item_bonus> skillatk, skillusesprate, skillusesp, skillheal, skillheal2, skillblown, skillcastrate, skillfixcastrate, subskill, skillcooldown, skillfixcast,
 		skillvarcast, skilldelay, itemhealrate, add_def, add_mdef, add_mdmg, reseff, itemgrouphealrate, itemsphealrate, itemgroupsphealrate;
 	std::vector<s_add_drop> add_drop;
+	std::vector<s_add_drop2> add_drop_extra;
 	std::vector<s_addele2> subele2;
 	std::vector<s_vanish_bonus> sp_vanish, hp_vanish;
 	std::vector<s_addrace2> subrace3;

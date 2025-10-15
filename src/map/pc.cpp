@@ -3706,6 +3706,65 @@ static void pc_bonus_addvanish(std::vector<s_vanish_bonus> &bonus, int16 rate, i
 	bonus.push_back(entry);
 }
 
+static void pc_bonus_item_drop_extra(std::vector<s_add_drop2> &drop, int32 level, t_itemid nameid, int32 group, int32 class_, short race, int32 rate)
+{
+	if (!nameid && !group) {
+		ShowWarning("pc_bonus_item_drop_extra: No Item ID or Group ID specified.\n");
+		return;
+	}
+	if (nameid && !item_db.exists(nameid)) {
+		ShowWarning("pc_bonus_item_drop_extra: Invalid item id %u\n",nameid);
+		return;
+	}
+	if (group && !itemdb_group.exists(group)) {
+		ShowWarning("pc_bonus_item_drop_extra: Invalid Item Group %hu\n",group);
+		return;
+	}	
+	if (drop.size() == MAX_PC_BONUS) {
+		ShowWarning("pc_bonus_item_drop_extra: Reached max (%d) number of added drops per character! (level: %d nameid: %u class_: %d race: %d rate: %d)\n", MAX_PC_BONUS, level, nameid, class_, race, rate);
+		return;
+	}
+
+	//Apply config rate adjustment settings.
+	if (rate >= 0) { //Absolute drop.
+		if (battle_config.item_rate_adddrop != 100)
+			rate = rate*battle_config.item_rate_adddrop/100;
+		if (rate < battle_config.item_drop_adddrop_min)
+			rate = battle_config.item_drop_adddrop_min;
+		else if (rate > battle_config.item_drop_adddrop_max)
+			rate = battle_config.item_drop_adddrop_max;
+	} else { //Relative drop, max/min limits are applied at drop time.
+		if (battle_config.item_rate_adddrop != 100)
+			rate = rate*battle_config.item_rate_adddrop/100;
+		if (rate > -1)
+			rate = -1;
+	}
+
+	for (auto &it : drop) {
+		if (it.nameid == nameid && it.level == level && it.race == race && it.class_ == class_) {
+			if ((rate < 0 && it.rate < 0) || (rate > 0 && it.rate > 0)) //Adjust the rate if it has same classification
+				it.rate = util::safe_addition_cap(it.rate, rate, 10000);
+			return;
+		}
+	}
+
+	struct s_add_drop2 entry = {};
+
+	entry.nameid = nameid;
+	entry.level = level;
+	entry.group = group;	
+	entry.race = race;
+	entry.class_ = class_;
+	entry.is_group = false;
+	
+	if(group)
+		entry.is_group = true;
+
+	entry.rate = cap_value(rate, -10000, 10000);
+
+	drop.push_back(entry);
+}
+
 /*==========================================
  * Add a bonus(type) to player sd
  * format: bonus bBonusName,val;
@@ -5242,6 +5301,12 @@ void pc_bonus3(map_session_data *sd,int32 type,int32 type2,int32 type3,int32 val
 		sd->norecover_state_race[type2].rate = type3;
 		sd->norecover_state_race[type2].tick = val;
 		break;
+	case SP_MOB_LEVEL_DROP: // bonus3 bAddMonsterLevelDropItem,<level>,<item id>,<chance n/100%>;
+		pc_bonus_item_drop_extra(sd->add_drop_extra, type2, type3, 0, CLASS_ALL, RC_ALL, val);	
+		break;
+	case SP_MOB_LEVEL_GDROP: // bonus3 bAddMonsterLevelDropGroup,<level>,<Group ID>,<chance n/100%>;
+		pc_bonus_item_drop_extra(sd->add_drop_extra, type2, 0, type3, CLASS_ALL, RC_ALL, val);	
+		break;
 	default:
 		if (current_equip_combo_pos > 0) {
 			ShowWarning("pc_bonus3: unknown bonus type %d %d %d %d in a combo with item #%u\n", type, type2, type3, val, sd->inventory_data[pc_checkequip( sd, current_equip_combo_pos )]->nameid);
@@ -5323,6 +5388,20 @@ void pc_bonus4(map_session_data *sd,int32 type,int32 type2,int32 type3,int32 typ
 		sd->mdef_set_race[type2].rate = type3;
 		sd->mdef_set_race[type2].tick = type4;
 		sd->mdef_set_race[type2].value = val;
+		break;
+
+	case SP_MOB_LEVEL_DROP_RACE: // bonus4 bAddMonsterLevelDropItemRace,<race>,<level>,<item id>,<chance n/100%>;
+		pc_bonus_item_drop_extra(sd->add_drop_extra, type3, type4, 0, CLASS_ALL, type2, val);
+		break;
+	case SP_MOB_LEVEL_DROP_CLASS: // bonus4 bAddMonsterLevelDropItemClass,<class>,<level>,<item id>,<chance n/100%>;
+		pc_bonus_item_drop_extra(sd->add_drop_extra, type3, type4, 0, type2, RC_ALL, val);
+		break;
+
+	case SP_MOB_LEVEL_GDROP_RACE: // bonus4 bAddMonsterLevelDropGroupRace,<race>,<level>,<Group ID>,<chance n/100%>;
+		pc_bonus_item_drop_extra(sd->add_drop_extra, type3, 0, type4, CLASS_ALL, type2, val);
+		break;
+	case SP_MOB_LEVEL_GDROP_CLASS: // bonus4 bAddMonsterLevelDropGroupClass,<class>,<level>,<Group ID>,<chance n/100%>;
+		pc_bonus_item_drop_extra(sd->add_drop_extra, type3, 0, type4, type2, RC_ALL, val);
 		break;
 
 	default:

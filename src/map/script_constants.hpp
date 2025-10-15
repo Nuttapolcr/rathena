@@ -10888,6 +10888,13 @@
 	export_constant(GUILDINFO_MASTERID);
 	export_constant(GUILDINFO_MASTERNAME);
 
+	export_constant2("bAddMonsterLevelDropItem", SP_MOB_LEVEL_DROP);
+	export_constant2("bAddMonsterLevelDropItemRace", SP_MOB_LEVEL_DROP_RACE);
+	export_constant2("bAddMonsterLevelDropItemClass", SP_MOB_LEVEL_DROP_CLASS);
+	export_constant2("bAddMonsterLevelDropGroup", SP_MOB_LEVEL_GDROP);
+	export_constant2("bAddMonsterLevelDropGroupRace", SP_MOB_LEVEL_GDROP_RACE);
+	export_constant2("bAddMonsterLevelDropGroupClass", SP_MOB_LEVEL_GDROP_CLASS);
+
 	#undef export_constant
 	#undef export_constant2
 	#undef export_parameter

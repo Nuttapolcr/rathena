@@ -3861,6 +3861,7 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
 	sd->hp_vanish.clear();
 	sd->itemsphealrate.clear();
 	sd->itemgroupsphealrate.clear();
+	sd->add_drop_extra.clear();
 
 	// Zero up structures...
 	memset(&sd->hp_loss, 0, sizeof(sd->hp_loss)
