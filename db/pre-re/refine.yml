@@ -924,3 +924,73 @@ Body:
                 Price: 10000
                 Material: Enriched_Oridecon
                 BreakingRate: 10000
+  - Group: Charm_Upgrade
+    Levels:
+      - Level: 1
+        RefineLevels:
+          - Level: 1
+            Chances:
+              - Type: Normal
+                Rate: 10000
+                Price: 10000
+                Material: Gold
+          - Level: 2
+            Chances:
+              - Type: Normal
+                Rate: 10000
+                Price: 11000
+                Material: Gold
+          - Level: 3
+            Chances:
+              - Type: Normal
+                Rate: 10000
+                Price: 12000
+                Material: Gold
+          - Level: 4
+            Chances:
+              - Type: Normal
+                Rate: 10000
+                Price: 13000
+                Material: Gold
+          - Level: 5
+            Chances:
+              - Type: Normal
+                Rate: 6000
+                Price: 14000
+                Material: Gold
+                BreakingRate: 10000
+          - Level: 6
+            Chances:
+              - Type: Normal
+                Rate: 4000
+                Price: 15000
+                Material: Gold
+                BreakingRate: 10000
+          - Level: 7
+            Chances:
+              - Type: Normal
+                Rate: 4000
+                Price: 16000
+                Material: Gold
+                BreakingRate: 10000
+          - Level: 8
+            Chances:
+              - Type: Normal
+                Rate: 2000
+                Price: 17000
+                Material: Gold
+                BreakingRate: 10000
+          - Level: 9
+            Chances:
+              - Type: Normal
+                Rate: 2000
+                Price: 18000
+                Material: Gold
+                BreakingRate: 10000
+          - Level: 10
+            Chances:
+              - Type: Normal
+                Rate: 900
+                Price: 19000
+                Material: Gold
+                BreakingRate: 10000

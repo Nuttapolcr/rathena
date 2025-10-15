@@ -957,6 +957,12 @@ public:
 	std::vector<uint32> party_booking_requests;
 
 	void update_look( _look look );
+
+	struct {
+		bool is_item3;
+		int refine;
+		int grade;
+	} item3;
 };
 
 extern struct eri *pc_sc_display_ers; /// Player's SC display table

@@ -54,10 +54,30 @@ Header:
   Type: ENCHANTGRADE_DB
   Version: 3
 
-Footer:
-  Imports:
-  - Path: db/pre-re/enchantgrade.yml
-    Mode: Prerenewal
-  - Path: db/re/enchantgrade.yml
-    Mode: Renewal
-  - Path: db/import/enchantgrade.yml
+Body:
+  - Type: Charm_Upgrade
+    Levels:
+      - Level: 1
+        Grades:
+          - Grade: None
+            Chances:
+              - Refine: 0
+                Chance: 1000
+              - Refine: 1
+                Chance: 2000
+            Bonus: 10
+            Catalyst:
+                Item: Blessed_Etel_Dust
+                AmountPerStep: 1
+                MaximumSteps: 10
+                ChanceIncrease: 100
+            Options:
+              - Option: 0
+                Item: Etel_Skyblue_Jewel
+                Amount: 1
+                Zeny: 175000
+                BreakingRate: 10000
+              - Option: 1
+                Item: Etel_Skyblue_Jewel
+                Amount: 5
+                Zeny: 875000

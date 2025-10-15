@@ -11376,6 +11376,87 @@ ACMD_FUNC(macrochecker){
 	return 0;
 }
 
+ACMD_FUNC(item3)
+{
+	char item_name[100];
+	int number = 0, bound = BOUND_NONE;
+	int refine = 0, grade = 0;
+	int c1 = 0, c2 = 0, c3 = 0, c4 = 0;
+	nullpo_retr(-1, sd);
+
+	memset(item_name, '\0', sizeof(item_name));
+
+	parent_cmd = atcommand_alias_db.checkAlias(command+1);
+
+	if ( !message || !*message || (
+		sscanf(message, "\"%99[^\"]\" %11d %11d %11d %11d %11d %11d %11d", item_name, &number, &refine, &grade, &c1, &c2, &c3, &c4) < 8 &&
+		sscanf(message, "%99s %11d %11d %11d %11d %11d %11d %11d", item_name, &number, &refine, &grade, &c1, &c2, &c3, &c4) < 8
+		)) {
+		clif_displaymessage(fd, msg_txt(sd,1540));
+		return -1;
+	}
+
+	if (number <= 0)
+		number = 1;
+
+	std::shared_ptr<item_data> item_data = item_db.searchname( item_name );
+
+	if( item_data == nullptr ){
+		item_data = item_db.find( strtoul( item_name, nullptr, 10 ) );
+	}
+
+	if( item_data != nullptr ){
+		int loop, get_count, i;
+		char flag = 0;
+
+		//Check if it's stackable.
+		if( !itemdb_isstackable2( item_data.get() ) ){
+			loop = number;
+			get_count = 1;
+		}else{
+			loop = 1;
+			get_count = number;
+		}
+
+		if( itemdb_isequip2( item_data.get() ) ){
+			refine = cap_value( refine, 0, MAX_REFINE );
+		}
+
+		for (i = 0; i < loop; i++) {
+			struct item item_tmp = {};
+
+			item_tmp.nameid = item_data->nameid;
+			item_tmp.identify = 1;
+			item_tmp.refine = refine;
+			item_tmp.attribute = 0;
+			item_tmp.card[0] = c1;
+			item_tmp.card[1] = c2;
+			item_tmp.card[2] = c3;
+			item_tmp.card[3] = c4;
+			item_tmp.bound = bound;
+			item_tmp.enchantgrade = grade;
+
+			sd->item3 = {};
+			sd->item3.is_item3 = true;
+			sd->item3.refine = refine;
+			sd->item3.grade = grade;
+
+			if (!pet_create_egg(sd, item_data->nameid)) {
+				if ((flag = pc_additem(sd, &item_tmp, get_count, LOG_TYPE_COMMAND)))
+					clif_additem(sd, 0, 0, flag);
+			}
+		}
+
+		if (flag == 0)
+			clif_displaymessage(fd, msg_txt(sd,18)); // Item created.
+	} else {
+		clif_displaymessage(fd, msg_txt(sd,19)); // Invalid item ID or name.
+		return -1;
+	}
+
+	return 0;
+}
+
 #include <custom/atcommand.inc>
 
 /**
@@ -11705,6 +11786,7 @@ void atcommand_basecommands(void) {
 		ACMD_DEFR(roulette, ATCMD_NOCONSOLE|ATCMD_NOAUTOTRADE),
 		ACMD_DEF(setcard),
 		ACMD_DEF(macrochecker),
+		ACMD_DEF(item3),
 	};
 	AtCommandInfo* atcommand;
 	int32 i;
