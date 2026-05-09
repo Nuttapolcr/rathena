@@ -359,10 +359,12 @@ static int on_login(void* data, void* user_data) {
 ### `atcmd` — @command แบบกำหนดเอง
 
 ```cpp
-api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello);
+api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello, /*user_data=*/nullptr);
 ```
 
-`level` คือ group ID ขั้นต่ำที่จำเป็นในการรัน command
+`level` คือ group ID ขั้นต่ำที่จำเป็นในการรัน command ส่วน
+`user_data` จะถูกส่งกลับให้ callback แบบไม่เปลี่ยนแปลงทุกครั้ง —
+ดู [Closure data](#closure-data-user_data)
 
 ### `quest` — เควสต์
 
@@ -434,7 +436,7 @@ format string แบบ variadic ไม่ปลอดภัยข้าม DLL 
 
 | Function | หน้าที่ |
 |---|---|
-| `register_handler(cmd, length, func)` | map packet ขาเข้าไปยัง handler ของคุณ ใช้ `length=-1` สำหรับ variable-length |
+| `register_handler(cmd, length, func, user_data)` | map packet ขาเข้าไปยัง handler ของคุณ ใช้ `length=-1` สำหรับ variable-length, `user_data` ส่งต่อให้ handler |
 | `unregister_handler(cmd)` | ลบ handler |
 | `read_b/w/l(fd, off)` | อ่านค่าจาก recv buffer |
 | `read_str(fd, off)` / `read_rest(fd)` | pointer string / จำนวน byte ที่เหลือ |
@@ -452,11 +454,40 @@ signature ของ handler คือ
 
 ## Pattern การใช้งาน
 
+### Closure data (`user_data`)
+
+ทุกการ register บน API นี้รับ pointer `user_data` ที่จะถูกส่งกลับให้
+callback แบบไม่เปลี่ยนแปลง ทำให้ฟังก์ชัน C ตัวเดียวรองรับการ register
+หลายครั้งได้โดยไม่ต้องพึ่ง global — มีประโยชน์เวลาปลั๊กอินใช้ logic
+เดียวกันแต่ config ต่างกัน:
+
+```cpp
+struct shop_t { uint32_t bonus_item; int32_t multiplier; };
+static shop_t small_shop{ 512, 1 }, big_shop{ 7227, 5 };
+
+// ฟังก์ชัน C ตัวเดียว, register 2 ครั้ง, config 2 ชุด
+api->atcmd.register_cmd("smallreward", 0, on_reward, &small_shop);
+api->atcmd.register_cmd("bigreward",   0, on_reward, &big_shop);
+```
+
+ทุก callback type ที่นี่มี closure mechanism เดียวกัน:
+
+| ที่ register | callback ได้รับ |
+|---|---|
+| `hook_add(..., user_data, ...)` | `cb(data, user_data)` |
+| `script_addcommand(..., user_data)` | `func(st, user_data)` |
+| `atcmd.register_cmd(..., user_data)` | `func(sd, cmd, msg, user_data)` |
+| `packet.register_handler(..., user_data)` | `func(fd, sd, user_data)` |
+| `map.foreachinmap(cb, user, ...)` | `cb(bl, user)` |
+| `timer.add_timer(..., id, data)` | `func(tid, tick, id, data)` |
+
+ส่ง `nullptr` ถ้าไม่ใช้
+
 ### Script command แบบกำหนดเอง
 
 ```cpp
 // plugin_hello "<name>";  →  print log, return "hello!"
-static int32_t buildin_plugin_hello(script_state* st) {
+static int32_t buildin_plugin_hello(script_state* st, void* /*user_data*/) {
     const char* name = g_api->script.getstr(st, 2);
     char buf[128];
     snprintf(buf, sizeof(buf), "[plugin] hello, %s", name ? name : "world");
@@ -466,7 +497,7 @@ static int32_t buildin_plugin_hello(script_state* st) {
 }
 
 // ใน plugin_init:
-api->script_addcommand("plugin_hello", "s", buildin_plugin_hello);
+api->script_addcommand("plugin_hello", "s", buildin_plugin_hello, /*user_data=*/nullptr);
 ```
 
 arg-string ใช้รูปแบบเดียวกับ rAthena: `s` = string, `i` = integer,
@@ -475,14 +506,15 @@ arg-string ใช้รูปแบบเดียวกับ rAthena: `s` = st
 ### @command แบบกำหนดเอง
 
 ```cpp
-static int32_t on_atcmd_heal(map_session_data* sd, const char* cmd, const char* msg) {
+static int32_t on_atcmd_heal(map_session_data* sd, const char* cmd,
+                             const char* msg, void* /*user_data*/) {
     g_api->status.heal(g_api->pc.as_bl(sd), 99999, 99999, 0);
     g_api->pc.message(g_api->pc.get_fd(sd), "Fully healed.");
     return 0;
 }
 
 // ใน plugin_init:
-api->atcmd.register_cmd("plugin_heal", /*level=*/0, on_atcmd_heal);
+api->atcmd.register_cmd("plugin_heal", /*level=*/0, on_atcmd_heal, /*user_data=*/nullptr);
 ```
 
 ### Async script command
@@ -500,7 +532,7 @@ static int32_t on_tick(int32_t, int64_t, int32_t, intptr_t data) {
     return 0;
 }
 
-static int32_t buildin_plugin_async(script_state* st) {
+static int32_t buildin_plugin_async(script_state* st, void* /*user_data*/) {
     void* token = g_api->script.suspend(st);
     g_api->timer.add_timer(g_api->timer.gettick() + 1000,
                            on_tick, 0, reinterpret_cast<intptr_t>(token));
@@ -517,7 +549,7 @@ static int32_t buildin_plugin_async(script_state* st) {
 ```cpp
 static constexpr uint16_t MY_PACKET = 0x0CFE;     // เลือกค่าที่ยังไม่ใช้
 
-static void on_my_packet(int32_t fd, map_session_data* sd) {
+static void on_my_packet(int32_t fd, map_session_data* sd, void* /*user_data*/) {
     if (!sd) return;
     uint32_t value = g_api->packet.read_l(fd, 2);  // ข้าม 2-byte cmd
 
@@ -529,7 +561,7 @@ static void on_my_packet(int32_t fd, map_session_data* sd) {
 }
 
 // ใน plugin_init:
-api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet);
+api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet, /*user_data=*/nullptr);
 ```
 
 ---

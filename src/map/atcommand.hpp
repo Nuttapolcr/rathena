@@ -35,7 +35,8 @@ const char* atcommand_alias_lookup( const std::string& cmd );
 // Plugin @command registration — reuse plugin_atcmd_func to avoid duplicate typedefs
 #include "plugin.hpp"
 using AtPluginCmdFunc = plugin_atcmd_func;
-bool atcommand_plugin_register(const char* name, int level, AtPluginCmdFunc func);
+bool atcommand_plugin_register(const char* name, int level,
+                               AtPluginCmdFunc func, void* user_data);
 void atcommand_plugin_final(void);
 
 // @commands (script based)

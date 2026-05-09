@@ -155,7 +155,7 @@ static int on_item_equip(void* data, void* /*user_data*/)
 
 // plugin_hello "<name>";
 // Returns the string "hello!".
-static int32_t buildin_plugin_hello(script_state* st)
+static int32_t buildin_plugin_hello(script_state* st, void* /*user_data*/)
 {
 	const char* name = g_api->script.getstr(st, 2);
 	printf("[example] Hello, %s!\n", name ? name : "world");
@@ -165,7 +165,7 @@ static int32_t buildin_plugin_hello(script_state* st)
 
 // plugin_give_item <item_id>, <amount>;
 // Gives the attached player <amount> of <item_id>. Returns 1 on success.
-static int32_t buildin_plugin_give_item(script_state* st)
+static int32_t buildin_plugin_give_item(script_state* st, void* /*user_data*/)
 {
 	map_session_data* sd = g_api->script.rid2sd(st);
 	if (!sd) {
@@ -185,7 +185,7 @@ static int32_t buildin_plugin_give_item(script_state* st)
 
 // plugin_spawn_mob <mob_id>, <amount>;
 // Spawns monsters at the attached player's location.
-static int32_t buildin_plugin_spawn_mob(script_state* st)
+static int32_t buildin_plugin_spawn_mob(script_state* st, void* /*user_data*/)
 {
 	map_session_data* sd = g_api->script.rid2sd(st);
 	if (!sd) {
@@ -208,7 +208,7 @@ static int32_t buildin_plugin_spawn_mob(script_state* st)
 
 // plugin_warp "<mapname>", <x>, <y>;
 // Warps the attached player to the given position.
-static int32_t buildin_plugin_warp(script_state* st)
+static int32_t buildin_plugin_warp(script_state* st, void* /*user_data*/)
 {
 	map_session_data* sd = g_api->script.rid2sd(st);
 	if (!sd) {
@@ -228,7 +228,7 @@ static int32_t buildin_plugin_warp(script_state* st)
 
 // plugin_announce "<message>";
 // Server-wide yellow broadcast — demonstrates clif.broadcast.
-static int32_t buildin_plugin_announce(script_state* st)
+static int32_t buildin_plugin_announce(script_state* st, void* /*user_data*/)
 {
 	const char* msg = g_api->script.getstr(st, 2);
 	if (msg) {
@@ -240,7 +240,7 @@ static int32_t buildin_plugin_announce(script_state* st)
 
 // plugin_count_mobs;
 // Counts mobs on the attached player's map — demonstrates map.foreachinmap.
-static int32_t buildin_plugin_count_mobs(script_state* st)
+static int32_t buildin_plugin_count_mobs(script_state* st, void* /*user_data*/)
 {
 	map_session_data* sd = g_api->script.rid2sd(st);
 	if (!sd) {
@@ -315,7 +315,7 @@ static int32_t plugin_async_roll_tick(int32_t /*tid*/, int64_t /*tick*/,
 // .@n = plugin_async_roll(<max>);
 // Demonstrates script.suspend / script.resume: the script pauses at this
 // command and resumes ~1 second later with a random integer in [1..max].
-static int32_t buildin_plugin_async_roll(script_state* st)
+static int32_t buildin_plugin_async_roll(script_state* st, void* /*user_data*/)
 {
 	auto max = static_cast<int32_t>(g_api->script.getnum(st, 2));
 	if (max < 1) max = 1;
@@ -353,7 +353,7 @@ struct plugin_pkt_ping_t {
 
 // Handler for inbound 0x0CFE: <cmd:2><value:4> = 6 bytes total.
 // Logs what arrived and echoes back a 0x0CFF with value+1.
-static void on_plugin_packet_hello(int32_t fd, map_session_data* sd)
+static void on_plugin_packet_hello(int32_t fd, map_session_data* sd, void* /*user_data*/)
 {
 	uint32_t value = g_api->packet.read_l(fd, 2);
 
@@ -375,7 +375,7 @@ static void on_plugin_packet_hello(int32_t fd, map_session_data* sd)
 // Pushes a 0x0CFF packet to the attached player. Demonstrates the
 // outbound side of the API; the client only needs to know how to parse
 // the 6-byte packet to react.
-static int32_t buildin_plugin_send_ping(script_state* st)
+static int32_t buildin_plugin_send_ping(script_state* st, void* /*user_data*/)
 {
 	map_session_data* sd = g_api->script.rid2sd(st);
 	if (!sd) {
@@ -394,7 +394,7 @@ static int32_t buildin_plugin_send_ping(script_state* st)
 
 // plugin_delayed_give <item_id>, <delay_seconds>;
 // Demonstrates timer.add_timer + clif.progressbar.
-static int32_t buildin_plugin_delayed_give(script_state* st)
+static int32_t buildin_plugin_delayed_give(script_state* st, void* /*user_data*/)
 {
 	map_session_data* sd = g_api->script.rid2sd(st);
 	if (!sd) {
@@ -435,19 +435,24 @@ PLUGIN_API bool plugin_init(plugin_api_t* api)
 	api->hook_add(HOOK_ITEM_DROP,      on_item_drop,      nullptr, 100);
 	api->hook_add(HOOK_ITEM_EQUIP,     on_item_equip,     nullptr, 100);
 
-	api->script_addcommand("plugin_hello",         "s",   buildin_plugin_hello);
-	api->script_addcommand("plugin_give_item",     "ii",  buildin_plugin_give_item);
-	api->script_addcommand("plugin_spawn_mob",     "ii",  buildin_plugin_spawn_mob);
-	api->script_addcommand("plugin_warp",          "sii", buildin_plugin_warp);
-	api->script_addcommand("plugin_announce",      "s",   buildin_plugin_announce);
-	api->script_addcommand("plugin_count_mobs",    "",    buildin_plugin_count_mobs);
-	api->script_addcommand("plugin_delayed_give",  "ii",  buildin_plugin_delayed_give);
-	api->script_addcommand("plugin_async_roll",    "i",   buildin_plugin_async_roll);
-	api->script_addcommand("plugin_send_ping",     "",    buildin_plugin_send_ping);
+	// All script commands here use nullptr as user_data; if you wanted
+	// to share the same C function across multiple registrations and
+	// distinguish them at dispatch, you'd pass per-registration context
+	// (e.g. a config struct pointer) here and read it via the second
+	// parameter of the buildin signature.
+	api->script_addcommand("plugin_hello",         "s",   buildin_plugin_hello,        nullptr);
+	api->script_addcommand("plugin_give_item",     "ii",  buildin_plugin_give_item,    nullptr);
+	api->script_addcommand("plugin_spawn_mob",     "ii",  buildin_plugin_spawn_mob,    nullptr);
+	api->script_addcommand("plugin_warp",          "sii", buildin_plugin_warp,         nullptr);
+	api->script_addcommand("plugin_announce",      "s",   buildin_plugin_announce,     nullptr);
+	api->script_addcommand("plugin_count_mobs",    "",    buildin_plugin_count_mobs,   nullptr);
+	api->script_addcommand("plugin_delayed_give",  "ii",  buildin_plugin_delayed_give, nullptr);
+	api->script_addcommand("plugin_async_roll",    "i",   buildin_plugin_async_roll,   nullptr);
+	api->script_addcommand("plugin_send_ping",     "",    buildin_plugin_send_ping,    nullptr);
 
 	// Install a fixed-length 6-byte handler for our custom inbound packet.
 	// Cleared automatically by plugin_manager_final on shutdown / reload.
-	api->packet.register_handler(PLUGIN_PACKET_HELLO, 6, on_plugin_packet_hello);
+	api->packet.register_handler(PLUGIN_PACKET_HELLO, 6, on_plugin_packet_hello, nullptr);
 
 	api->log.status("[example] Plugin loaded. New commands: plugin_announce, plugin_count_mobs, plugin_delayed_give, plugin_async_roll, plugin_send_ping");
 	return true;

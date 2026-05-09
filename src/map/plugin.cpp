@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -78,6 +79,7 @@ struct PluginCmd {
 	std::string        name;
 	std::string        arg;
 	plugin_script_func func;
+	void*              user_data;
 };
 
 struct LoadedPlugin {
@@ -95,10 +97,16 @@ static std::vector<LoadedPlugin> loaded_plugins;
 // when the engine reclaims a state, so resume() on a stale token is safe.
 static std::unordered_set<script_state*> suspended_states;
 
-// Tracks every packet id currently mapped to a plugin-supplied handler.
-// plugin_manager_final() walks this set to null out the slots, preventing
-// the engine from calling into a function that lives in a now-unloaded DLL.
-static std::unordered_set<uint16_t> plugin_packet_ids;
+// Tracks every packet id currently mapped to a plugin-supplied handler,
+// along with the per-registration {func, user_data} closure. The engine
+// installs `plugin_packet_trampoline` (below) into packet_db, and the
+// trampoline looks up this map to invoke the real plugin function with
+// its user_data.
+struct PluginPacketEntry {
+	plugin_packet_func func;
+	void*              user_data;
+};
+static std::unordered_map<uint16_t, PluginPacketEntry> plugin_packet_handlers;
 
 // ============================================================
 // Hook management API implementation
@@ -124,13 +132,24 @@ static void impl_hook_remove(int type, plugin_hook_cb cb)
 		[cb](const HookEntry& e){ return e.cb == cb; }), chain.end());
 }
 
-static bool impl_script_addcommand(const char* name, const char* arg, plugin_script_func func)
+static bool impl_script_addcommand(const char* name, const char* arg,
+                                   plugin_script_func func, void* user_data)
 {
 	if (!name || !func)
 		return false;
 	int idx = static_cast<int>(plugin_cmds.size());
-	plugin_cmds.push_back({ name, arg ? arg : "*", func });
-	return script_plugin_register(name, arg ? arg : "*", func, idx);
+	plugin_cmds.push_back({ name, arg ? arg : "*", func, user_data });
+	return script_plugin_register(name, arg ? arg : "*", idx);
+}
+
+// Called by the script engine's plugin trampoline (see script.cpp).
+// Invokes the actual plugin function with its captured user_data.
+int32_t plugin_dispatch_script_cmd(int idx, script_state* st)
+{
+	if (idx < 0 || idx >= static_cast<int>(plugin_cmds.size()))
+		return PLUGIN_SCRIPT_CMD_FAILURE;
+	auto& c = plugin_cmds[idx];
+	return c.func(st, c.user_data);
 }
 
 // ============================================================
@@ -349,9 +368,10 @@ static uint32_t api_item_get_nameid(item* it)
 // Atcmd API wrappers
 // ============================================================
 
-static bool api_atcmd_register(const char* name, int level, plugin_atcmd_func func)
+static bool api_atcmd_register(const char* name, int level,
+                               plugin_atcmd_func func, void* user_data)
 {
-	return atcommand_plugin_register(name, level, func);
+	return atcommand_plugin_register(name, level, func, user_data);
 }
 
 // ============================================================
@@ -582,16 +602,27 @@ static void api_log_debug  (const char* msg) { ShowDebug  ("%s\n", msg ? msg : "
 // Packet API wrappers
 // ============================================================
 
-static bool api_packet_register(uint16_t cmd, int16_t length, plugin_packet_func func)
+// Single trampoline shared by every plugin-registered packet. Looks up
+// the {func, user_data} closure by cmd id from RFIFOW(fd, 0).
+static void plugin_packet_trampoline(int32 fd, map_session_data* sd)
+{
+	uint16_t cmd = RFIFOW(fd, 0);
+	auto it = plugin_packet_handlers.find(cmd);
+	if (it == plugin_packet_handlers.end()) return;
+	it->second.func(fd, sd, it->second.user_data);
+}
+
+static bool api_packet_register(uint16_t cmd, int16_t length,
+                                plugin_packet_func func, void* user_data)
 {
 	if (!func || cmd < MIN_PACKET_DB || cmd > MAX_PACKET_DB)
 		return false;
 	// `packetdb_addpacket` is variadic with offset list terminated by 0.
 	// Plugins compute their own offsets via read_b/w/l, so we pass none.
+	// We install our trampoline; the real func+user_data lives in the map.
 	packetdb_addpacket(cmd, static_cast<uint16>(length),
-	                   reinterpret_cast<void(*)(int32, map_session_data*)>(func),
-	                   0);
-	plugin_packet_ids.insert(cmd);
+	                   plugin_packet_trampoline, 0);
+	plugin_packet_handlers[cmd] = { func, user_data };
 	return true;
 }
 
@@ -600,7 +631,7 @@ static bool api_packet_unregister(uint16_t cmd)
 	if (cmd < MIN_PACKET_DB || cmd > MAX_PACKET_DB)
 		return false;
 	packetdb_addpacket(cmd, 0, nullptr, 0);
-	plugin_packet_ids.erase(cmd);
+	plugin_packet_handlers.erase(cmd);
 	return true;
 }
 
@@ -907,9 +938,9 @@ void plugin_manager_final(void)
 
 	// Clear plugin-registered client packets for the same reason: clif_parse
 	// must not dispatch into a function whose DLL is about to vanish.
-	for (uint16_t cmd : plugin_packet_ids)
-		packetdb_addpacket(cmd, 0, nullptr, 0);
-	plugin_packet_ids.clear();
+	for (auto& kv : plugin_packet_handlers)
+		packetdb_addpacket(kv.first, 0, nullptr, 0);
+	plugin_packet_handlers.clear();
 
 	for (auto it = loaded_plugins.rbegin(); it != loaded_plugins.rend(); ++it) {
 		if (it->pfn_final)

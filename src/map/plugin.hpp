@@ -348,17 +348,23 @@ struct plugin_atcmd_execute_t {
 // Callback types
 // ============================================================
 
+// All plugin callbacks accept a `user_data` pointer that is passed
+// verbatim from the matching register*() call. It lets a single C
+// function back multiple registrations without resorting to globals.
+
 typedef int (*plugin_hook_cb)(void* data, void* user_data);
-typedef int32_t (*plugin_script_func)(struct script_state* st);
+typedef int32_t (*plugin_script_func)(struct script_state* st, void* user_data);
 typedef int32_t (*plugin_atcmd_func)(struct map_session_data* sd,
                                      const char* command,
-                                     const char* message);
+                                     const char* message,
+                                     void* user_data);
 
 // Block-list iteration callback (for map.foreachinmap / foreachinarea).
 // Return value is summed by the caller; non-zero typically indicates "matched".
 typedef int32_t (*plugin_blcb)(struct block_list* bl, void* user_data);
 
 // Timer callback signature — matches map-server TimerFunc.
+// `data` is the closure pointer you passed to timer.add_timer.
 typedef int32_t (*plugin_timer_func)(int32_t tid, int64_t tick,
                                      int32_t id, intptr_t data);
 
@@ -366,7 +372,8 @@ typedef int32_t (*plugin_timer_func)(int32_t tid, int64_t tick,
 // registered via packet.register_handler arrives on `fd`. `sd` is the
 // player session (may be null before login, e.g. for handshake packets).
 // Read payload via packet.read_b/w/l/str at offsets you define.
-typedef void (*plugin_packet_func)(int32_t fd, struct map_session_data* sd);
+typedef void (*plugin_packet_func)(int32_t fd, struct map_session_data* sd,
+                                   void* user_data);
 
 // ============================================================
 // Server function API sub-structs
@@ -510,7 +517,8 @@ struct plugin_item_api_t {
 
 // ---- Custom @commands ----
 struct plugin_atcmd_api_t {
-	bool (*register_cmd)(const char* name, int level, plugin_atcmd_func func);
+	bool (*register_cmd)(const char* name, int level,
+	                     plugin_atcmd_func func, void* user_data);
 };
 
 // ---- Quest management ----
@@ -612,12 +620,14 @@ struct plugin_packet_api_t {
 	// Install a handler. `length` is the fixed packet size in bytes
 	// (including the 2-byte cmd header), or -1 for variable-length
 	// packets where the length is read from offset 2 (uint16). Returns
-	// false if `cmd` is out of range or `func` is null.
+	// false if `cmd` is out of range or `func` is null. `user_data` is
+	// passed unchanged to the handler on every dispatch.
 	//
 	// IMPORTANT: register handlers from plugin_init(). The plugin
 	// system automatically clears them on plugin_final() so the
 	// engine never calls into an unloaded DLL.
-	bool (*register_handler)(uint16_t cmd, int16_t length, plugin_packet_func func);
+	bool (*register_handler)(uint16_t cmd, int16_t length,
+	                         plugin_packet_func func, void* user_data);
 
 	// Drop a previously-registered handler.
 	bool (*unregister_handler)(uint16_t cmd);
@@ -647,7 +657,8 @@ struct plugin_packet_api_t {
 struct plugin_api_t {
 	void (*hook_add)   (int hook_type, plugin_hook_cb cb, void* user_data, int priority);
 	void (*hook_remove)(int hook_type, plugin_hook_cb cb);
-	bool (*script_addcommand)(const char* name, const char* arg, plugin_script_func func);
+	bool (*script_addcommand)(const char* name, const char* arg,
+	                          plugin_script_func func, void* user_data);
 
 	struct plugin_script_api_t  script;
 	struct plugin_pc_api_t      pc;
@@ -689,8 +700,11 @@ void        plugin_manager_init(void);
 void        plugin_manager_final(void);
 int         plugin_hook_fire(int hook_type, void* data);
 const char* plugin_get_cmd_arg(int idx);
-bool        script_plugin_register(const char* name, const char* arg,
-                                   plugin_script_func func, int cmd_idx);
+bool        script_plugin_register(const char* name, const char* arg, int cmd_idx);
+
+// Server-internal: invoked by the script engine's plugin trampoline.
+// Returns the value of the plugin's actual function. Defined in plugin.cpp.
+int32_t     plugin_dispatch_script_cmd(int idx, struct script_state* st);
 
 // Notify the plugin system that a script_state is about to be freed,
 // so any plugin-held suspend tokens for it become no-ops on resume().

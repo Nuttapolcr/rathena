@@ -360,10 +360,12 @@ Use inside a custom script command (`script_addcommand`).
 ### `atcmd` — Custom @commands
 
 ```cpp
-api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello);
+api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello, /*user_data=*/nullptr);
 ```
 
-`level` is the minimum group ID required to run the command.
+`level` is the minimum group ID required to run the command. The
+`user_data` pointer is passed back unchanged on every dispatch — see
+[Closure data](#closure-data-user_data).
 
 ### `quest` — Quests
 
@@ -435,7 +437,7 @@ Install handlers on unused packet IDs and push outbound packets to clients.
 
 | Function | Purpose |
 |---|---|
-| `register_handler(cmd, length, func)` | Map an inbound packet to your handler. `length=-1` for variable-length. |
+| `register_handler(cmd, length, func, user_data)` | Map an inbound packet to your handler. `length=-1` for variable-length. `user_data` is forwarded to the handler. |
 | `unregister_handler(cmd)` | Remove a handler |
 | `read_b/w/l(fd, off)` | Read primitives from the recv buffer |
 | `read_str(fd, off)` / `read_rest(fd)` | String pointer / bytes remaining |
@@ -453,11 +455,40 @@ The handler signature is
 
 ## Patterns
 
+### Closure data (`user_data`)
+
+Every registration on this API accepts a `user_data` pointer that is
+passed verbatim to the callback. It lets a single C function back
+multiple registrations without resorting to globals — useful when a
+plugin exposes the same logic with different configuration:
+
+```cpp
+struct shop_t { uint32_t bonus_item; int32_t multiplier; };
+static shop_t small_shop{ 512, 1 }, big_shop{ 7227, 5 };
+
+// Same C function, two registrations, two configs.
+api->atcmd.register_cmd("smallreward", 0, on_reward, &small_shop);
+api->atcmd.register_cmd("bigreward",   0, on_reward, &big_shop);
+```
+
+Every callback type here exposes the same closure mechanism:
+
+| Where you register | Callback receives |
+|---|---|
+| `hook_add(..., user_data, ...)` | `cb(data, user_data)` |
+| `script_addcommand(..., user_data)` | `func(st, user_data)` |
+| `atcmd.register_cmd(..., user_data)` | `func(sd, cmd, msg, user_data)` |
+| `packet.register_handler(..., user_data)` | `func(fd, sd, user_data)` |
+| `map.foreachinmap(cb, user, ...)` | `cb(bl, user)` |
+| `timer.add_timer(..., id, data)` | `func(tid, tick, id, data)` |
+
+Pass `nullptr` if you do not need it.
+
 ### Custom script commands
 
 ```cpp
 // plugin_hello "<name>";  →  prints to console, returns "hello!"
-static int32_t buildin_plugin_hello(script_state* st) {
+static int32_t buildin_plugin_hello(script_state* st, void* /*user_data*/) {
     const char* name = g_api->script.getstr(st, 2);
     char buf[128];
     snprintf(buf, sizeof(buf), "[plugin] hello, %s", name ? name : "world");
@@ -467,7 +498,7 @@ static int32_t buildin_plugin_hello(script_state* st) {
 }
 
 // In plugin_init:
-api->script_addcommand("plugin_hello", "s", buildin_plugin_hello);
+api->script_addcommand("plugin_hello", "s", buildin_plugin_hello, /*user_data=*/nullptr);
 ```
 
 The arg-string follows rAthena's existing convention:
@@ -476,14 +507,15 @@ The arg-string follows rAthena's existing convention:
 ### Custom @commands
 
 ```cpp
-static int32_t on_atcmd_heal(map_session_data* sd, const char* cmd, const char* msg) {
+static int32_t on_atcmd_heal(map_session_data* sd, const char* cmd,
+                             const char* msg, void* /*user_data*/) {
     g_api->status.heal(g_api->pc.as_bl(sd), 99999, 99999, 0);
     g_api->pc.message(g_api->pc.get_fd(sd), "Fully healed.");
     return 0;
 }
 
 // In plugin_init:
-api->atcmd.register_cmd("plugin_heal", /*level=*/0, on_atcmd_heal);
+api->atcmd.register_cmd("plugin_heal", /*level=*/0, on_atcmd_heal, /*user_data=*/nullptr);
 ```
 
 ### Async script commands
@@ -501,7 +533,7 @@ static int32_t on_tick(int32_t, int64_t, int32_t, intptr_t data) {
     return 0;
 }
 
-static int32_t buildin_plugin_async(script_state* st) {
+static int32_t buildin_plugin_async(script_state* st, void* /*user_data*/) {
     void* token = g_api->script.suspend(st);
     g_api->timer.add_timer(g_api->timer.gettick() + 1000,
                            on_tick, 0, reinterpret_cast<intptr_t>(token));
@@ -519,7 +551,7 @@ later `resume()` becomes a no-op.
 ```cpp
 static constexpr uint16_t MY_PACKET = 0x0CFE;     // pick something unused
 
-static void on_my_packet(int32_t fd, map_session_data* sd) {
+static void on_my_packet(int32_t fd, map_session_data* sd, void* /*user_data*/) {
     if (!sd) return;
     uint32_t value = g_api->packet.read_l(fd, 2);  // skip 2-byte cmd
 
@@ -531,7 +563,7 @@ static void on_my_packet(int32_t fd, map_session_data* sd) {
 }
 
 // In plugin_init:
-api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet);
+api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet, /*user_data=*/nullptr);
 ```
 
 ---
