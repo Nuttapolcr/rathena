@@ -19,6 +19,7 @@
 #include "path.hpp"
 #include "pc.hpp"
 #include "pc_groups.hpp"
+#include "plugin.hpp"
 #include "storage.hpp"
 
 #define TRADE_DISTANCE 2 ///Max distance from traders to enable a trade to take place.
@@ -81,6 +82,14 @@ void trade_traderequest(map_session_data *sd, map_session_data *target_sd)
 	    (sd->m != target_sd->m || !check_distance_bl(sd, target_sd, TRADE_DISTANCE))) {
 		clif_traderesponse(*sd, TRADE_ACK_TOOFAR);
 		return ;
+	}
+
+	{
+		plugin_trade_request_t hook_data = { sd, target_sd };
+		if (plugin_hook_fire(HOOK_TRADE_REQUEST, &hook_data) == HOOK_STOP) {
+			clif_traderesponse(*sd, TRADE_ACK_FAILED);
+			return;
+		}
 	}
 
 	target_sd->trade_partner.id = sd->status.account_id;
@@ -623,6 +632,14 @@ void trade_tradecommit(map_session_data *sd)
 	}
 
 	// trade is accepted and correct.
+	{
+		plugin_trade_commit_t hook_data = { sd, tsd };
+		if (plugin_hook_fire(HOOK_TRADE_COMMIT, &hook_data) == HOOK_STOP) {
+			trade_tradecancel(sd);
+			return;
+		}
+	}
+
 	for( trade_i = 0; trade_i < 10; trade_i++ ) {
 		int32 n;
 		unsigned char flag = 0;

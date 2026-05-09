@@ -63,6 +63,7 @@
 #include "storage.hpp"
 #include "unit.hpp" // unit_stop_attack(), unit_stop_walking()
 #include "vending.hpp" // struct s_vending
+#include "plugin.hpp"
 
 using namespace rathena;
 
@@ -2302,6 +2303,10 @@ bool pc_authok(map_session_data *sd, uint32 login_id2, time_t expiration_time, i
 
 	// Request all registries (auth is considered completed whence they arrive)
 	intif_request_registry(sd,7);
+	{
+		plugin_pc_login_t hook_data = { sd };
+		plugin_hook_fire(HOOK_PC_LOGIN, &hook_data);
+	}
 	return true;
 }
 
@@ -6001,6 +6006,12 @@ enum e_additem_result pc_additem(map_session_data *sd,struct item *item,int32 am
 	if( amount > MAX_AMOUNT )
 		return ADDITEM_OVERAMOUNT;
 
+	{
+		plugin_item_pickup_t hook_data = { sd, item, amount };
+		if (plugin_hook_fire(HOOK_ITEM_PICKUP, &hook_data) == HOOK_STOP)
+			return ADDITEM_INVALID;
+	}
+
 	id = itemdb_search(item->nameid);
 
 	if( id->stack.inventory && amount > id->stack.amount )
@@ -6159,6 +6170,12 @@ bool pc_dropitem(map_session_data *sd,int32 n,int32 amount)
 	{
 		clif_displaymessage (sd->fd, msg_txt(sd,271));
 		return false; //Can't drop items in nodrop mapflag maps.
+	}
+
+	{
+		plugin_item_drop_t hook_data = { sd, n, amount };
+		if (plugin_hook_fire(HOOK_ITEM_DROP, &hook_data) == HOOK_STOP)
+			return false;
 	}
 
 	if( !pc_candrop(sd,&sd->inventory.u.items_inventory[n]) )
@@ -6482,6 +6499,12 @@ int32 pc_useitem(map_session_data *sd,int32 n)
 
 	if( !pc_isUseitem(sd,n) )
 		return 0;
+
+	{
+		plugin_item_use_t hook_data = { sd, n };
+		if (plugin_hook_fire(HOOK_ITEM_USE, &hook_data) == HOOK_STOP)
+			return 0;
+	}
 
 	// Store information for later use before it is lost (via pc_delitem) [Paradox924X]
 	nameid = id->nameid;
@@ -8300,6 +8323,10 @@ int32 pc_checkbaselevelup(map_session_data *sd) {
 		achievement_update_objective(sd, AG_GOAL_LEVEL, 1, base_level);
 		achievement_update_objective(sd, AG_GOAL_STATUS, 2, base_level, sd->status.class_);
 	}
+	{
+		plugin_pc_levelup_t hook_data = { sd, 0 };
+		plugin_hook_fire(HOOK_PC_BASELEVELUP, &hook_data);
+	}
 	return 1;
 }
 
@@ -8354,6 +8381,10 @@ int32 pc_checkjoblevelup(map_session_data *sd)
 		achievement_update_objective(sd, AG_GOAL_LEVEL, 1, job_level);
 
 	pc_show_questinfo(sd);
+	{
+		plugin_pc_levelup_t hook_data = { sd, 1 };
+		plugin_hook_fire(HOOK_PC_JOBLEVELUP, &hook_data);
+	}
 	return 1;
 }
 
@@ -9790,6 +9821,12 @@ int32 pc_dead(map_session_data *sd,block_list *src)
 				pc_respawn_timer(INVALID_TIMER, gettick(), sd->id, 0);
 			return 0;
 		}
+	}
+
+	{
+		plugin_pc_dead_t hook_data = { sd, src };
+		if (plugin_hook_fire(HOOK_PC_DEAD, &hook_data) == HOOK_STOP)
+			return 0;
 	}
 
 	for(k = 0; k < MAX_DEVOTION; k++) {
@@ -12041,6 +12078,12 @@ bool pc_equipitem(map_session_data *sd,int16 n,int32 req_pos,bool equipswitch)
 	if (!(id = sd->inventory_data[n]))
 		return false;
 	pos = pc_equippoint(sd,n); //With a few exceptions, item should go in all specified slots.
+
+	{
+		plugin_item_equip_t hook_data = { sd, n, req_pos };
+		if (plugin_hook_fire(HOOK_ITEM_EQUIP, &hook_data) == HOOK_STOP)
+			return false;
+	}
 
 	if(battle_config.battle_log && !equipswitch)
 		ShowInfo("equip %u (%d) %x:%x\n",sd->inventory.u.items_inventory[n].nameid,n,id?id->equip:0,req_pos);

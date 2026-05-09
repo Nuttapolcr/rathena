@@ -23,6 +23,7 @@
 #include "npc.hpp"
 #include "path.hpp"
 #include "pc.hpp"
+#include "plugin.hpp"
 #include "pc_groups.hpp"
 
 static uint32 vending_nextid = 0; ///Vending_id counter
@@ -143,6 +144,12 @@ void vending_purchasereq(map_session_data* sd, int32 aid, int32 uid, const uint8
 
 	if( count < 1 || count > MAX_VENDING || count > vsd->vend_num )
 		return; // invalid amount of purchased items
+
+	{
+		plugin_vending_buy_t hook_data = { sd, vsd };
+		if (plugin_hook_fire(HOOK_VENDING_BUY, &hook_data) == HOOK_STOP)
+			return;
+	}
 
 	blank = pc_inventoryblank(sd); //number of free cells in the buyer's inventory
 
@@ -323,6 +330,12 @@ int8 vending_openvending( map_session_data& sd, const char* message, const uint8
 		sd.state.workinprogress = WIP_DISABLE_NONE;
 		clif_openvending_ack( sd, OPENSTORE2_FAILED );
 		return 3;
+	}
+
+	{
+		plugin_vending_open_t hook_data = { &sd, message };
+		if (plugin_hook_fire(HOOK_VENDING_OPEN, &hook_data) == HOOK_STOP)
+			return 1;
 	}
 
 	if (save_settings&CHARSAVE_VENDING) // Avoid invalid data from saving

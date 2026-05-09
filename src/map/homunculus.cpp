@@ -17,6 +17,7 @@
 
 #include "battle.hpp"
 #include "clif.hpp"
+#include "plugin.hpp"
 #include "intif.hpp"
 #include "itemdb.hpp"
 #include "log.hpp"
@@ -514,6 +515,11 @@ int32 hom_levelup(homun_data *hd)
 	hom.level++;
 	if (!(hom.level % 3))
 		hom.skillpts++;	//1 skillpoint each 3 base level
+
+	{
+		plugin_homun_levelup_t hook_data = { hd, (int32_t)hom.level };
+		plugin_hook_fire(HOOK_HOMUN_LEVELUP, &hook_data);
+	}
 
 	hom.exp -= hd->exp_next;
 	hd->exp_next = homun_exp_db.get_nextexp(hom.level);
@@ -1129,6 +1135,12 @@ bool hom_call(map_session_data *sd)
 
 	if (hd->homunculus.vaporize == HOM_ST_MORPH)
 		return false; // Can't call homunculus (morph state).
+
+	{
+		plugin_homun_call_t hook_data = { sd };
+		if (plugin_hook_fire(HOOK_HOMUN_CALL, &hook_data) == HOOK_STOP)
+			return false;
+	}
 
 	hom_init_timers(hd);
 	hd->homunculus.vaporize = HOM_ST_ACTIVE;

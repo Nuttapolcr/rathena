@@ -26,6 +26,7 @@
 #include "mapreg.hpp"
 #include "mob.hpp"
 #include "pc.hpp"
+#include "plugin.hpp"
 #include "pc_groups.hpp"
 #include "trade.hpp"
 
@@ -159,6 +160,16 @@ int32 party_create( map_session_data& sd, char *name, int32 item, int32 item2 ){
 
 	sd.party_creating = true;
 	party_fill_member( leader, sd, 1 );
+
+	{
+		plugin_party_create_t hook_data = { &sd, tname };
+		if (plugin_hook_fire(HOOK_PARTY_CREATE, &hook_data) == HOOK_STOP) {
+			sd.party_creating = false;
+			clif_party_created(sd, 1);
+			return -1;
+		}
+	}
+
 	intif_create_party(&leader,name,item,item2);
 
 	return 1;
@@ -791,6 +802,13 @@ bool party_leave( map_session_data& sd, bool showMessage ){
 	}
 
 	party_trade_bound_cancel( sd );
+
+	{
+		plugin_party_leave_t hook_data = { &sd, p->party.party_id };
+		if (plugin_hook_fire(HOOK_PARTY_LEAVE, &hook_data) == HOOK_STOP)
+			return false;
+	}
+
 	intif_party_leave( p->party.party_id, sd.status.account_id, sd.status.char_id, sd.status.name, PARTY_MEMBER_WITHDRAW_LEAVE );
 
 	return true;

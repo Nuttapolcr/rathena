@@ -62,6 +62,7 @@
 #include "pet.hpp"
 #include "quest.hpp"
 #include "storage.hpp"
+#include "plugin.hpp"
 
 using namespace rathena;
 
@@ -968,7 +969,9 @@ const char* parse_callfunc(const char* p, int32 require_paren, int32 is_custom)
 		// buildin function
 		add_scriptl(func);
 		add_scriptc(C_ARG);
-		arg = buildin_func[str_data[func].val].arg;
+		arg = (str_data[func].val >= PLUGIN_CMD_BASE)
+		    ? plugin_get_cmd_arg(static_cast<int>(str_data[func].val - PLUGIN_CMD_BASE))
+		    : buildin_func[static_cast<int>(str_data[func].val)].arg;
 #if defined(SCRIPT_COMMAND_DEPRECATION)
 		if( str_data[func].deprecated ){
 			ShowWarning( "Usage of deprecated script function '%s'.\n", get_str(func) );
@@ -2262,6 +2265,40 @@ static void add_buildin_func(void)
 			else if( !strcmp(buildin_func[i].name, "getelementofarray") ) buildin_getelementofarray_ref = n;
 		}
 	}
+}
+
+// Register a script command from a plugin. cmd_idx is the index into the
+// plugin's internal command list; it is stored offset by PLUGIN_CMD_BASE so
+// parse_callfunc can distinguish plugin commands from builtin ones.
+bool script_plugin_register(const char* name, const char* arg, plugin_script_func func, int cmd_idx)
+{
+	if (!name || !func)
+		return false;
+
+	const char* p = arg ? arg : "";
+	while (*p == 'v' || *p == 's' || *p == 'i' || *p == 'r' || *p == 'l') ++p;
+	while (*p == '?') ++p;
+	if (*p == '*') ++p;
+	if (*p != 0) {
+		ShowWarning("script_plugin_register: invalid arg string '%s' for command '%s'\n", arg, name);
+		return false;
+	}
+	if (*skip_word(name) != 0) {
+		ShowWarning("script_plugin_register: invalid command name '%s'\n", name);
+		return false;
+	}
+
+	int32 n = add_str(name);
+	if (str_data[n].type == C_FUNC) {
+		ShowWarning("script_plugin_register: command '%s' already exists\n", name);
+		return false;
+	}
+
+	str_data[n].type       = C_FUNC;
+	str_data[n].val        = static_cast<int64>(PLUGIN_CMD_BASE) + cmd_idx;
+	str_data[n].func       = func;
+	str_data[n].deprecated = false;
+	return true;
 }
 
 /**

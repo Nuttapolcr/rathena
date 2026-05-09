@@ -233,6 +233,7 @@
     <ClInclude Include="pc.hpp" />
     <ClInclude Include="pc_groups.hpp" />
     <ClInclude Include="pet.hpp" />
+    <ClInclude Include="plugin.hpp" />
     <ClInclude Include="quest.hpp" />
     <ClInclude Include="script.hpp" />
     <ClInclude Include="script_constants.hpp" />
@@ -1526,6 +1527,7 @@
     <ClCompile Include="pc.cpp" />
     <ClCompile Include="pc_groups.cpp" />
     <ClCompile Include="pet.cpp" />
+    <ClCompile Include="plugin.cpp" />
     <ClCompile Include="quest.cpp" />
     <ClCompile Include="script.cpp" />
     <ClCompile Include="searchstore.cpp" />

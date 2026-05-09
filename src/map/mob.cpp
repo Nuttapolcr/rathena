@@ -40,6 +40,7 @@
 #include "pc.hpp"
 #include "pet.hpp"
 #include "quest.hpp"
+#include "plugin.hpp"
 
 using namespace rathena;
 
@@ -1188,6 +1189,7 @@ int32 mob_spawn (mob_data *md)
 	mob_setstate(*md, MSS_IDLE);
 	md->ud.state.blockedmove = false;
 	md->next_walktime = tick+rnd()%1000+MIN_RANDOMWALKTIME;
+
 	md->last_linktime = 0;
 	md->last_pcneartime = 0;
 	md->last_canmove = tick;
@@ -1220,6 +1222,10 @@ int32 mob_spawn (mob_data *md)
 		clif_spawn(md);
 	skill_unit_move(md,tick,1);
 	mobskill_use(md, tick, MSC_SPAWN);
+	{
+		plugin_mob_spawn_t hook_data = { md };
+		plugin_hook_fire(HOOK_MOB_SPAWN, &hook_data);
+	}
 	return 0;
 }
 
@@ -2953,6 +2959,12 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 	if( src && src->type == BL_PC ) {
 		sd = (map_session_data *)src;
 		first_sd = sd;
+	}
+
+	{
+		plugin_mob_kill_t hook_data = { md, src, type };
+		if (plugin_hook_fire(HOOK_MOB_KILL, &hook_data) == HOOK_STOP)
+			return 0;
 	}
 
 	if( md->guardian_data && md->guardian_data->number >= 0 && md->guardian_data->number < MAX_GUARDIANS )

@@ -52,6 +52,7 @@
 #include "quest.hpp"
 #include "storage.hpp"
 #include "trade.hpp"
+#include "plugin.hpp"
 
 using namespace rathena;
 using namespace rathena::server_map;
@@ -2236,6 +2237,11 @@ int32 map_quit(map_session_data *sd) {
 			chrif_auth_delete(node->account_id, node->char_id, node->state);
 		//Non-active players should not have loaded any data yet (or it was cleared already) so no additional cleanups are needed.
 		return 0;
+	}
+
+	{
+		plugin_pc_logout_t hook_data = { sd };
+		plugin_hook_fire(HOOK_PC_LOGOUT, &hook_data);
 	}
 
 	if (sd->expiration_tid != INVALID_TIMER)
@@ -5039,6 +5045,7 @@ void MapServer::finalize(){
 	chrif_char_reset_offline();
 	chrif_flush_fifo();
 
+	plugin_manager_final(); // unload plugins before any subsystem is torn down
 	do_final_atcommand();
 	do_final_battle();
 	do_final_chrif();
@@ -5424,6 +5431,7 @@ bool MapServer::initialize( int32 argc, char *argv[] ){
 	do_init_clif();
 #endif
 	do_init_script();
+	plugin_manager_init(); // load plugins after script engine, before NPC compilation
 	do_init_itemdb();
 	do_init_channel();
 	do_init_cashshop();

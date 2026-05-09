@@ -18,6 +18,7 @@
 #include "battle.hpp"
 #include "chrif.hpp"
 #include "clif.hpp"
+#include "plugin.hpp"
 #include "intif.hpp"
 #include "itemdb.hpp"
 #include "log.hpp"
@@ -601,6 +602,12 @@ int32 quest_add(map_session_data *sd, int32 quest_id)
 		return -1;
 	}
 
+	{
+		plugin_quest_add_t hook_data = { sd, quest_id };
+		if (plugin_hook_fire(HOOK_QUEST_ADD, &hook_data) == HOOK_STOP)
+			return -1;
+	}
+
 	int32 n = sd->avail_quests; //Insertion point
 
 	sd->num_quests++;
@@ -857,6 +864,12 @@ int32 quest_update_status(map_session_data *sd, int32 quest_id, e_quest_state st
 	}
 
 	sd->quest_log[i].state = status;
+
+	if (status == Q_COMPLETE) {
+		plugin_quest_complete_t hook_data = { sd, quest_id };
+		plugin_hook_fire(HOOK_QUEST_COMPLETE, &hook_data);
+	}
+
 	sd->save_quest = true;
 
 	if (status < Q_COMPLETE) {

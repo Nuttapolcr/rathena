@@ -33,6 +33,7 @@
 #include "navi.hpp"
 #include "pc.hpp"
 #include "pet.hpp"
+#include "plugin.hpp"
 #include "script.hpp" // script_config
 
 using namespace rathena;
@@ -2236,6 +2237,12 @@ int32 npc_click(map_session_data* sd, npc_data* nd)
 
 	if( nd->dynamicnpc.owner_char_id != 0 ){
 		nd->dynamicnpc.last_interaction = gettick();
+	}
+
+	{
+		plugin_npc_click_t hook_data = { sd, nd };
+		if (plugin_hook_fire(HOOK_NPC_CLICK, &hook_data) == HOOK_STOP)
+			return 1;
 	}
 
 	switch(nd->subtype) {

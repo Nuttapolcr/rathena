@@ -22,6 +22,7 @@
 #include "battle.hpp"
 #include "chrif.hpp"
 #include "clif.hpp"
+#include "plugin.hpp"
 #include "intif.hpp"
 #include "log.hpp"
 #include "mob.hpp"
@@ -1091,6 +1092,11 @@ int32 pet_birth_process(map_session_data *sd, struct s_pet *pet)
 	pet->char_id = sd->status.char_id;
 	sd->status.pet_id = pet->pet_id;
 
+	{
+		plugin_pet_born_t hook_data = { sd };
+		plugin_hook_fire(HOOK_PET_BORN, &hook_data);
+	}
+
 	if(!pet_data_init(sd, pet)) {
 		return 1;
 	}
@@ -1215,6 +1221,12 @@ void pet_catch_process_start( map_session_data& sd, t_itemid item_id, e_pet_catc
 	if (map_getmapflag(sd.m, MF_NOPETCAPTURE)) {
 		clif_displaymessage(sd.fd, msg_txt(&sd, 669)); // You can't catch any pet on this map.
 		return;
+	}
+
+	{
+		plugin_pet_catch_t hook_data = { &sd, (uint32_t)item_id };
+		if (plugin_hook_fire(HOOK_PET_CATCH, &hook_data) == HOOK_STOP)
+			return;
 	}
 
 	std::shared_ptr<s_pet_catch_process> process = util::umap_find( pet_catchprocesses, sd.status.char_id );

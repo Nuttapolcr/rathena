@@ -44,6 +44,7 @@
 #include "pet.hpp"
 #include "script.hpp"
 #include "status.hpp"
+#include "plugin.hpp"
 #include "unit.hpp"
 
 // Include .cpp files into the TU to optimize compile time
@@ -4206,6 +4207,12 @@ int32 skill_castend_damage_id (block_list* src, block_list *bl, uint16 skill_id,
 		return 1;
 	}
 
+	{
+		plugin_skill_use_t hook_data = { src, bl, skill_id, skill_lv };
+		if (plugin_hook_fire(HOOK_SKILL_USE, &hook_data) == HOOK_STOP)
+			return 0;
+	}
+
 	sc = status_get_sc(src);
 	tsc = status_get_sc(bl);
 	if (sc != nullptr && sc->empty())
@@ -4390,6 +4397,12 @@ int32 skill_castend_nodamage_id (block_list *src, block_list *bl, uint16 skill_i
 
 	dstsd = BL_CAST(BL_PC, bl);
 	dstmd = BL_CAST(BL_MOB, bl);
+
+	{
+		plugin_skill_use_t hook_data = { src, bl, skill_id, skill_lv };
+		if (plugin_hook_fire(HOOK_SKILL_USE, &hook_data) == HOOK_STOP)
+			return 0;
+	}
 
 	if(bl->prev == nullptr)
 		return 1;

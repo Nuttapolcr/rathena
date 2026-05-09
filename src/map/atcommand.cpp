@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <set>
 #include <unordered_map>
+#include <vector>
 
 #include <common/cbasetypes.hpp>
 #include <common/database.hpp>
@@ -53,6 +54,7 @@
 #include "script.hpp"
 #include "storage.hpp"
 #include "trade.hpp"
+#include "plugin.hpp"
 #include "vending.hpp"
 
 using namespace rathena;
@@ -11919,6 +11921,15 @@ static void atcommand_get_suggestions(map_session_data* sd, const char *name, bo
  *  2 : console (admin:@atcommand)
  *  3 : script call (useatcmd)
  */
+
+struct PluginAtCmdEntry {
+	std::string      name;
+	int              level;
+	AtPluginCmdFunc  func;
+};
+
+static std::vector<PluginAtCmdEntry> s_plugin_atcmds;
+
 bool is_atcommand(const int32 fd, map_session_data* sd, const char* message, int32 type)
 {
 	char command[CHAT_SIZE_MAX], params[CHAT_SIZE_MAX];
@@ -12040,6 +12051,25 @@ bool is_atcommand(const int32 fd, map_session_data* sd, const char* message, int
 		}
 	}
 
+	// @commands (plugin based)
+	if (!s_plugin_atcmds.empty()) {
+		for (auto& pcmd : s_plugin_atcmds) {
+			if (strcasecmp(pcmd.name.c_str(), command + 1) == 0) {
+				if (pc_get_group_level(sd) < pcmd.level)
+					return false;
+				plugin_atcmd_execute_t hook_data = { ssd, command, params };
+				plugin_hook_fire(HOOK_ATCMD_EXECUTE, &hook_data);
+				if (pcmd.func(ssd, command, params) != 0) {
+					sprintf(output, msg_txt(sd, 154), command);
+					clif_displaymessage(fd, output);
+				} else {
+					log_atcommand(sd, is_atcommand ? atcmd_msg : message);
+				}
+				return true;
+			}
+		}
+	}
+
 	//Grab the command information and check for the proper GM level required to use it or if the command exists
 	info = get_atcommandinfo_byname(atcommand_alias_db.checkAlias(command + 1));
 	if (info == nullptr) {
@@ -12076,6 +12106,10 @@ bool is_atcommand(const int32 fd, map_session_data* sd, const char* message, int
 	}
 
 	//Attempt to use the command
+	{
+		plugin_atcmd_execute_t hook_data = { ssd, command, params };
+		plugin_hook_fire(HOOK_ATCMD_EXECUTE, &hook_data);
+	}
 	if ( (info->func(fd, ssd, command, params) != 0) )
 	{
 		sprintf(output,msg_txt(sd,154), command); // %s failed.
@@ -12154,10 +12188,33 @@ void atcommand_doload(void) {
 #endif
 }
 
+// ============================================================
+// Plugin @command registry
+// ============================================================
+
+bool atcommand_plugin_register(const char* name, int level, AtPluginCmdFunc func)
+{
+	if (!name || !*name || !func)
+		return false;
+	for (auto& e : s_plugin_atcmds)
+		if (strcasecmp(e.name.c_str(), name) == 0)
+			return false; // already registered
+	s_plugin_atcmds.push_back({ name, level, func });
+	return true;
+}
+
+void atcommand_plugin_final(void)
+{
+	s_plugin_atcmds.clear();
+}
+
+// ============================================================
+
 void do_init_atcommand(void) {
 	atcommand_doload();
 }
 
 void do_final_atcommand(void) {
+	atcommand_plugin_final();
 	atcommand_db_clear();
 }

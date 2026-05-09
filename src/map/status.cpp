@@ -34,6 +34,7 @@
 #include "pc.hpp"
 #include "pc_groups.hpp"
 #include "pet.hpp"
+#include "plugin.hpp"
 #include "script.hpp"
 
 using namespace rathena;
@@ -10186,6 +10187,12 @@ bool status_change_start(block_list* src, block_list* bl, sc_type type, int32 ra
 	if (sc->option&OPTION_MADOGEAR && flag&SCSTART_NOAVOID && scdb->flag[SCF_FAILEDMADO])
 		return false;
 
+	{
+		plugin_status_change_t hook_data = { bl, (int32_t)type, val1, val2, val3, val4, (int64_t)duration };
+		if (plugin_hook_fire(HOOK_STATUS_CHANGE_START, &hook_data) == HOOK_STOP)
+			return false;
+	}
+
 	status_data* status = status_get_status_data(*bl);
 
 	// Check for Boss resistances
@@ -13448,6 +13455,11 @@ int32 status_change_end( block_list* bl, enum sc_type type, int32 tid ){
 	if( status_change_entry* sce = sc->getSCE( type ); sce != nullptr ){
 		if (sce->timer != tid && tid != INVALID_TIMER)
 			return 0;
+
+		{
+			plugin_status_change_t hook_data = { bl, (int32_t)type, sce->val1, sce->val2, sce->val3, sce->val4, 0 };
+			plugin_hook_fire(HOOK_STATUS_CHANGE_END, &hook_data);
+		}
 
 		if (tid == INVALID_TIMER) {
 			if (type == SC_ENDURE && sce->val4)

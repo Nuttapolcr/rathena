@@ -54,6 +54,7 @@
 #include "quest.hpp"
 #include "script.hpp"
 #include "skill.hpp"
+#include "plugin.hpp"
 #include "status.hpp"
 #include "storage.hpp"
 #include "unit.hpp"
@@ -11515,6 +11516,12 @@ void clif_parse_GlobalMessage(int32 fd, map_session_data* sd)
 	if( !clif_process_message(sd, false, name, message, output ) )
 		return;
 
+	{
+		plugin_pc_chat_t hook_data = { sd, message };
+		if (plugin_hook_fire(HOOK_PC_CHAT, &hook_data) == HOOK_STOP)
+			return;
+	}
+
 	if( sd->gcbind && ((sd->gcbind->opt&CHAN_OPT_CAN_CHAT) || pc_has_permission(sd, PC_PERM_CHANNEL_ADMIN)) ) {
 		channel_send(sd->gcbind,sd,message);
 		return;
@@ -11865,6 +11872,12 @@ void clif_parse_WisMessage(int32 fd, map_session_data* sd)
 	// validate packet and retrieve name and message
 	if( !clif_process_message( sd, true, target, message, output ) )
 		return;
+
+	{
+		plugin_pc_whisper_t hook_data = { sd, target, message };
+		if (plugin_hook_fire(HOOK_PC_WHISPER, &hook_data) == HOOK_STOP)
+			return;
+	}
 
 	// Chat logging type 'W' / Whisper
 	log_chat(LOG_CHAT_WHISPER, 0, sd->status.char_id, sd->status.account_id, mapindex_id2name(sd->mapindex), sd->x, sd->y, target, message);
@@ -13972,6 +13985,12 @@ void clif_parse_PartyMessage(int32 fd, map_session_data* sd){
 	if( !clif_process_message( sd, false, name, message, output ) )
 		return;
 
+	{
+		plugin_pc_partychat_t hook_data = { sd, message };
+		if (plugin_hook_fire(HOOK_PC_PARTYCHAT, &hook_data) == HOOK_STOP)
+			return;
+	}
+
 	party_send_message(sd, output, strlen(output) + 1 );
 }
 
@@ -14587,6 +14606,12 @@ void clif_parse_GuildMessage(int32 fd, map_session_data* sd){
 	// validate packet and retrieve name and message
 	if( !clif_process_message( sd, false, name, message, output ) )
 		return;
+
+	{
+		plugin_pc_guildchat_t hook_data = { sd, message };
+		if (plugin_hook_fire(HOOK_PC_GUILDCHAT, &hook_data) == HOOK_STOP)
+			return;
+	}
 
 	if( sd->bg_id )
 		bg_send_message(sd, output, strlen(output) );

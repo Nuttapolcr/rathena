@@ -29,6 +29,7 @@
 #include "mob.hpp"
 #include "npc.hpp"
 #include "pc.hpp"
+#include "plugin.hpp"
 #include "storage.hpp"
 #include "trade.hpp"
 
@@ -713,6 +714,15 @@ bool guild_create( map_session_data& sd, const char* name ){
 
 	guild_makemember( m, sd );
 	m.position=0;
+
+	{
+		plugin_guild_create_t hook_data = { &sd, tname };
+		if (plugin_hook_fire(HOOK_GUILD_CREATE, &hook_data) == HOOK_STOP) {
+			clif_guild_created( sd, 2 );
+			return false;
+		}
+	}
+
 	intif_guild_create(name,&m);
 
 	return true;
@@ -1147,6 +1157,11 @@ int32 guild_member_added(int32 guild_id,uint32 account_id,uint32 char_id,int32 f
 	if (g->instance_id > 0)
 		instance_reqinfo(sd, g->instance_id);
 
+	{
+		plugin_guild_join_t hook_data = { sd, guild_id };
+		plugin_hook_fire(HOOK_GUILD_JOIN, &hook_data);
+	}
+
 	return 0;
 }
 
@@ -1179,6 +1194,12 @@ bool guild_leave( map_session_data& sd, int32 guild_id, uint32 account_id, uint3
 	}
 
 	guild_trade_bound_cancel(sd);
+
+	{
+		plugin_guild_leave_t hook_data = { &sd, guild_id };
+		if (plugin_hook_fire(HOOK_GUILD_LEAVE, &hook_data) == HOOK_STOP)
+			return false;
+	}
 
 	return intif_guild_leave( sd.status.guild_id, sd.status.account_id, sd.status.char_id, 0, mes );
 }

@@ -22,6 +22,7 @@
 #include "map.hpp" // map_session_data
 #include "packets.hpp"
 #include "pc.hpp"
+#include "plugin.hpp"
 #include "pc_groups.hpp"
 
 using namespace rathena;
@@ -140,6 +141,12 @@ int32 storage_storageopen(map_session_data *sd)
 	if( !pc_can_give_items(sd) ) { // check is this GM level is allowed to put items to storage
 		clif_displaymessage( sd->fd, msg_txt( sd, 246 ) ); // Your GM level doesn't authorize you to perform this action.
 		return 1;
+	}
+
+	{
+		plugin_storage_open_t hook_data = { sd };
+		if (plugin_hook_fire(HOOK_STORAGE_OPEN, &hook_data) == HOOK_STOP)
+			return 1;
 	}
 
 	sd->state.storage_flag = 1;
