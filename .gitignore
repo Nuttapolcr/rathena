@@ -114,6 +114,23 @@ Thumbs.db
 /tools/*.ilk
 /tools/*.pdb
 
+# /plugins/ — built plugin binaries (per-platform)
+/plugins/**/*.so
+/plugins/**/*.dylib
+/plugins/**/*.dll
+/plugins/**/*.exp
+/plugins/**/*.lib
+/plugins/**/*.pdb
+/plugins/**/*.ilk
+/plugins/**/*.exe
+/plugins/**/*.obj
+/plugins/**/*.o
+/plugins/**/Debug/
+/plugins/**/Release/
+/plugins/**/x64/
+/plugins/**/CMakeFiles/
+/plugins/**/CMakeCache.txt
+
 # Visual Studio
 .vs
 *.VC.db
