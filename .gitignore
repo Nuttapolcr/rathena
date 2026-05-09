@@ -125,11 +125,18 @@ Thumbs.db
 /plugins/**/*.exe
 /plugins/**/*.obj
 /plugins/**/*.o
+/plugins/**/*.a
 /plugins/**/Debug/
 /plugins/**/Release/
 /plugins/**/x64/
 /plugins/**/CMakeFiles/
 /plugins/**/CMakeCache.txt
+/plugins/**/cmake_install.cmake
+/plugins/**/Makefile.cmake
+/plugins/**/obj/
+/plugins/**/build/
+/plugins/**/cmake-build-*/
+/plugins/**/_deps/
 
 # Visual Studio
 .vs
