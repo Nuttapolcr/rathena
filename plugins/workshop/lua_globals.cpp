@@ -17,7 +17,9 @@ extern "C" {
 }
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <string>
 #include <vector>
@@ -296,6 +298,290 @@ static int lw_timer_after(lua_State* L) {
     int32_t tid = g_api->timer.add_timer(when, lua_timer_dispatch, id,
                                           reinterpret_cast<intptr_t>(tm));
     lua_pushinteger(L, tid);
+    return 1;
+}
+
+// ---- OnClock / OnMinute / OnHour / OnDay / OnSun..OnSat events ----
+//
+// Names follow the rAthena label convention so users can copy-paste from
+// existing scripts. The dispatcher runs every second once start_event_system
+// has been called; it fires events when the wall-clock minute, hour, or
+// day rolls over (matching npc_event_do_clock semantics).
+
+// event-name → list of registry refs (Lua functions)
+static std::map<std::string, std::vector<int>> g_event_handlers;
+
+static int32_t g_clock_tid = -1;
+static struct tm g_prev_tm = {};
+
+static void fire_event(const char* name) {
+    auto it = g_event_handlers.find(name);
+    if (it == g_event_handlers.end()) return;
+    lua_State* L = L_get();
+    if (!L) return;
+
+    // Copy the ref list — handlers are allowed to (un)register events
+    // during dispatch.
+    std::vector<int> refs = it->second;
+    for (int ref : refs) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
+            continue;
+        }
+        lua_pushstring(L, name);
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            wlog_warning("event '%s' error: %s", name,
+                         lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+}
+
+static int32_t clock_tick_cb(int32_t /*tid*/, int64_t /*tick*/,
+                             int32_t /*id*/, intptr_t /*data*/) {
+    time_t now = time(nullptr);
+    struct tm lt = {};
+    localtime_r(&now, &lt);
+
+    char buf[32];
+
+    if (lt.tm_min != g_prev_tm.tm_min) {
+        snprintf(buf, sizeof(buf), "OnMinute%02d", lt.tm_min);
+        fire_event(buf);
+
+        snprintf(buf, sizeof(buf), "OnClock%02d%02d", lt.tm_hour, lt.tm_min);
+        fire_event(buf);
+
+        const char* day = nullptr;
+        switch (lt.tm_wday) {
+            case 0: day = "OnSun"; break;
+            case 1: day = "OnMon"; break;
+            case 2: day = "OnTue"; break;
+            case 3: day = "OnWed"; break;
+            case 4: day = "OnThu"; break;
+            case 5: day = "OnFri"; break;
+            case 6: day = "OnSat"; break;
+        }
+        if (day) {
+            snprintf(buf, sizeof(buf), "%s%02d%02d", day, lt.tm_hour, lt.tm_min);
+            fire_event(buf);
+        }
+    }
+
+    if (lt.tm_hour != g_prev_tm.tm_hour) {
+        snprintf(buf, sizeof(buf), "OnHour%02d", lt.tm_hour);
+        fire_event(buf);
+    }
+
+    if (lt.tm_mday != g_prev_tm.tm_mday) {
+        snprintf(buf, sizeof(buf), "OnDay%02d%02d",
+                 lt.tm_mon + 1, lt.tm_mday);
+        fire_event(buf);
+    }
+
+    g_prev_tm = lt;
+    return 0;
+}
+
+// on_event("OnClock1300", fn) — generic registration. Accepts any of the
+// rAthena clock label names (OnMinuteMM, OnHourHH, OnClockHHMM, OnDayMMDD,
+// OnSun..SatHHMM). Multiple handlers may register for the same name.
+static int lw_on_event(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    g_event_handlers[name].push_back(ref);
+    return 0;
+}
+
+// on_clock(hh, mm, fn) — fires once daily at HH:MM
+static int lw_on_clock(lua_State* L) {
+    int hh = (int)luaL_checkinteger(L, 1);
+    int mm = (int)luaL_checkinteger(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "OnClock%02d%02d", hh, mm);
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    g_event_handlers[buf].push_back(ref);
+    return 0;
+}
+
+// on_minute(mm, fn) — fires every hour at xx:MM
+static int lw_on_minute(lua_State* L) {
+    int mm = (int)luaL_checkinteger(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "OnMinute%02d", mm);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    g_event_handlers[buf].push_back(ref);
+    return 0;
+}
+
+// on_hour(hh, fn) — fires daily at HH:00
+static int lw_on_hour(lua_State* L) {
+    int hh = (int)luaL_checkinteger(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "OnHour%02d", hh);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    g_event_handlers[buf].push_back(ref);
+    return 0;
+}
+
+// on_day(month, day, fn) — fires yearly on month/day at 00:00
+static int lw_on_day(lua_State* L) {
+    int mo = (int)luaL_checkinteger(L, 1);
+    int dd = (int)luaL_checkinteger(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "OnDay%02d%02d", mo, dd);
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    g_event_handlers[buf].push_back(ref);
+    return 0;
+}
+
+// ---- Named relative timers (mirror NPC OnTimer<ms>) ----
+//
+// Lua side:
+//   on_timer("boss", 5000, function() ... end)   -- registers offset
+//   on_timer("boss", 10000, function() ... end)  -- can register many
+//   init_timer("boss")                           -- clears any pending
+//   start_timer("boss")                          -- begins ticking
+//   stop_timer("boss")                           -- pauses
+//   get_timer_tick("boss")                       -- ms elapsed since start
+
+struct NamedTimerCb {
+    int64_t offset_ms;
+    int     ref;
+    int32_t scheduled_tid = -1;
+};
+
+struct NamedTimer {
+    bool                       running    = false;
+    int64_t                    start_tick = 0;
+    std::vector<NamedTimerCb>  callbacks;
+};
+
+static std::map<std::string, NamedTimer> g_named_timers;
+
+// One heap object per scheduled tick so the timer callback can identify
+// which (timer, callback-index) it belongs to without using a raw index
+// that might be invalidated by reallocations.
+struct ScheduledNamedTimer {
+    std::string timer_name;
+    size_t      cb_index;
+};
+
+static int32_t named_timer_cb(int32_t /*tid*/, int64_t /*tick*/,
+                              int32_t /*id*/, intptr_t data) {
+    auto* sched = reinterpret_cast<ScheduledNamedTimer*>(data);
+    if (!sched) return 0;
+
+    auto it = g_named_timers.find(sched->timer_name);
+    if (it != g_named_timers.end()
+        && sched->cb_index < it->second.callbacks.size()) {
+        auto& cb = it->second.callbacks[sched->cb_index];
+        cb.scheduled_tid = -1;
+
+        lua_State* L = L_get();
+        if (L) {
+            lua_rawgeti(L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(L, -1)) {
+                lua_pushstring(L, sched->timer_name.c_str());
+                lua_pushinteger(L, (lua_Integer)cb.offset_ms);
+                if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
+                    wlog_warning("OnTimer '%s' error: %s",
+                                 sched->timer_name.c_str(),
+                                 lua_tostring(L, -1));
+                    lua_pop(L, 1);
+                }
+            } else {
+                lua_pop(L, 1);
+            }
+        }
+    }
+    delete sched;
+    return 0;
+}
+
+static void cancel_pending_named_timer(NamedTimer& nt) {
+    for (auto& cb : nt.callbacks) {
+        if (cb.scheduled_tid >= 0) {
+            g_api->timer.delete_timer(cb.scheduled_tid, named_timer_cb);
+            cb.scheduled_tid = -1;
+        }
+    }
+}
+
+// on_timer(name, offset_ms, fn)
+static int lw_on_timer(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    int64_t off      = luaL_checkinteger(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    auto& nt = g_named_timers[name];
+    nt.callbacks.push_back({off, ref, -1});
+    return 0;
+}
+
+// init_timer(name): cancel pending, reset to a stopped state at 0.
+static int lw_init_timer(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    auto& nt = g_named_timers[name];
+    cancel_pending_named_timer(nt);
+    nt.running = false;
+    nt.start_tick = 0;
+    return 0;
+}
+
+// start_timer(name): begin ticking; schedule each callback's offset.
+// If the timer is already running this is a no-op.
+static int lw_start_timer(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    auto& nt = g_named_timers[name];
+    if (nt.running) return 0;
+    nt.running    = true;
+    nt.start_tick = g_api->timer.gettick();
+    for (size_t i = 0; i < nt.callbacks.size(); ++i) {
+        auto& cb = nt.callbacks[i];
+        auto* sched = new ScheduledNamedTimer{name, i};
+        cb.scheduled_tid = g_api->timer.add_timer(
+            nt.start_tick + cb.offset_ms,
+            named_timer_cb, 0,
+            reinterpret_cast<intptr_t>(sched));
+    }
+    return 0;
+}
+
+// stop_timer(name): pause; cancel pending callbacks.
+static int lw_stop_timer(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    auto it = g_named_timers.find(name);
+    if (it == g_named_timers.end()) return 0;
+    cancel_pending_named_timer(it->second);
+    it->second.running = false;
+    return 0;
+}
+
+// get_timer_tick(name) -> ms elapsed since last start, or 0 when stopped
+static int lw_get_timer_tick(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    auto it = g_named_timers.find(name);
+    if (it == g_named_timers.end() || !it->second.running) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    lua_pushinteger(L,
+        (lua_Integer)(g_api->timer.gettick() - it->second.start_tick));
     return 1;
 }
 
@@ -819,12 +1105,65 @@ void register_globals(lua_State* L) {
         {"register_atcmd",      lw_register_atcmd},
         {"register_buildin",    lw_register_buildin},
         {"hook",                lw_hook},
+        {"on_event",            lw_on_event},
+        {"on_clock",            lw_on_clock},
+        {"on_minute",           lw_on_minute},
+        {"on_hour",             lw_on_hour},
+        {"on_day",              lw_on_day},
+        {"on_timer",            lw_on_timer},
+        {"init_timer",          lw_init_timer},
+        {"start_timer",         lw_start_timer},
+        {"stop_timer",          lw_stop_timer},
+        {"get_timer_tick",      lw_get_timer_tick},
         {nullptr, nullptr}
     };
     for (const luaL_Reg* r = fns; r->name; ++r) {
         lua_pushcfunction(L, r->func);
         lua_setglobal(L, r->name);
     }
+}
+
+void start_event_system() {
+    if (g_clock_tid >= 0) return;
+
+    // Snapshot the current wall-clock so the very first tick (~1s away)
+    // doesn't immediately fire OnClock/OnHour/OnDay for the current moment.
+    time_t now = time(nullptr);
+    localtime_r(&now, &g_prev_tm);
+
+    int64_t when = g_api->timer.gettick() + 1000;
+    g_clock_tid  = g_api->timer.add_timer_interval(
+        when, clock_tick_cb, 0, 0, 1000);
+}
+
+void stop_event_system() {
+    if (g_clock_tid >= 0) {
+        g_api->timer.delete_timer(g_clock_tid, clock_tick_cb);
+        g_clock_tid = -1;
+    }
+
+    // Cancel any pending named-timer ticks so their data structs are freed.
+    for (auto& kv : g_named_timers) {
+        cancel_pending_named_timer(kv.second);
+    }
+
+    // Drop registry refs we own. The Lua state is typically about to be
+    // closed anyway, but explicit cleanup keeps the door open for hot
+    // reload paths that recreate the VM in place.
+    if (lua_State* L = L_get()) {
+        for (auto& kv : g_event_handlers) {
+            for (int r : kv.second) {
+                luaL_unref(L, LUA_REGISTRYINDEX, r);
+            }
+        }
+        for (auto& kv : g_named_timers) {
+            for (auto& cb : kv.second.callbacks) {
+                luaL_unref(L, LUA_REGISTRYINDEX, cb.ref);
+            }
+        }
+    }
+    g_event_handlers.clear();
+    g_named_timers.clear();
 }
 
 } // namespace workshop

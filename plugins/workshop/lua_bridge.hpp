@@ -39,6 +39,15 @@ private:
 // Register all rAthena script wrappers as Lua globals on `L`.
 void register_globals(lua_State* L);
 
+// Start the OnClock/OnMinute/OnHour/OnDay/OnSun..OnSat dispatcher.
+// Should be called once after mods have loaded; it schedules a 1-second
+// interval timer that fires events when wall-clock minute/hour/day rolls.
+void start_event_system();
+
+// Tear down the clock dispatcher and any pending named-timer callbacks.
+// Releases all Lua refs held by the event registries.
+void stop_event_system();
+
 } // namespace workshop
 
 #endif
