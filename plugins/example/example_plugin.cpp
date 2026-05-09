@@ -15,6 +15,7 @@
  *   plugin_count_mobs;           // count mobs on the attached player's map
  *   plugin_delayed_give 512, 5;  // give an Apple after 5 seconds
  *   .@n = plugin_async_roll(3);  // suspends script ~1s then resumes with a roll [1..N]
+ *   plugin_send_ping;            // pushes a custom 0x0CFE packet to the player
  */
 
 #include <cstdio>
@@ -334,6 +335,63 @@ static int32_t buildin_plugin_async_roll(script_state* st)
 	return PLUGIN_SCRIPT_CMD_SUCCESS;
 }
 
+// ---- Custom client packet demo ----
+//
+// Picks an unused id near the top of the packet table. A real deployment
+// should coordinate this with the client's packet table; here we just pick
+// 0x0CFE for inbound (client -> server) and 0x0CFF for outbound (server ->
+// client).
+static constexpr uint16_t PLUGIN_PACKET_HELLO = 0x0CFE; // fixed-length, 6 bytes
+static constexpr uint16_t PLUGIN_PACKET_PING  = 0x0CFF; // fixed-length, 6 bytes
+
+#pragma pack(push, 1)
+struct plugin_pkt_ping_t {
+	uint16_t cmd;     // 0x0CFF
+	uint32_t value;
+};
+#pragma pack(pop)
+
+// Handler for inbound 0x0CFE: <cmd:2><value:4> = 6 bytes total.
+// Logs what arrived and echoes back a 0x0CFF with value+1.
+static void on_plugin_packet_hello(int32_t fd, map_session_data* sd)
+{
+	uint32_t value = g_api->packet.read_l(fd, 2);
+
+	char buf[128];
+	snprintf(buf, sizeof(buf), "[example] packet 0x%04x from %s: value=%u",
+	         PLUGIN_PACKET_HELLO,
+	         sd ? g_api->pc.get_name(sd) : "(no session)", value);
+	g_api->log.info(buf);
+
+	if (!sd) return;
+
+	plugin_pkt_ping_t reply{};
+	reply.cmd   = PLUGIN_PACKET_PING;
+	reply.value = value + 1;
+	g_api->packet.send_self(g_api->pc.get_fd(sd), &reply, sizeof(reply));
+}
+
+// plugin_send_ping;
+// Pushes a 0x0CFF packet to the attached player. Demonstrates the
+// outbound side of the API; the client only needs to know how to parse
+// the 6-byte packet to react.
+static int32_t buildin_plugin_send_ping(script_state* st)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+
+	plugin_pkt_ping_t pkt{};
+	pkt.cmd   = PLUGIN_PACKET_PING;
+	pkt.value = 42;
+	g_api->packet.send_self(g_api->pc.get_fd(sd), &pkt, sizeof(pkt));
+
+	g_api->script.pushint(st, 1);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
 // plugin_delayed_give <item_id>, <delay_seconds>;
 // Demonstrates timer.add_timer + clif.progressbar.
 static int32_t buildin_plugin_delayed_give(script_state* st)
@@ -385,8 +443,13 @@ PLUGIN_API bool plugin_init(plugin_api_t* api)
 	api->script_addcommand("plugin_count_mobs",    "",    buildin_plugin_count_mobs);
 	api->script_addcommand("plugin_delayed_give",  "ii",  buildin_plugin_delayed_give);
 	api->script_addcommand("plugin_async_roll",    "i",   buildin_plugin_async_roll);
+	api->script_addcommand("plugin_send_ping",     "",    buildin_plugin_send_ping);
 
-	api->log.status("[example] Plugin loaded. New commands: plugin_announce, plugin_count_mobs, plugin_delayed_give, plugin_async_roll");
+	// Install a fixed-length 6-byte handler for our custom inbound packet.
+	// Cleared automatically by plugin_manager_final on shutdown / reload.
+	api->packet.register_handler(PLUGIN_PACKET_HELLO, 6, on_plugin_packet_hello);
+
+	api->log.status("[example] Plugin loaded. New commands: plugin_announce, plugin_count_mobs, plugin_delayed_give, plugin_async_roll, plugin_send_ping");
 	return true;
 }
 

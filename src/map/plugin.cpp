@@ -35,6 +35,7 @@
 #include <common/mapindex.hpp>
 #include <common/showmsg.hpp>
 
+#include <common/socket.hpp>
 #include <common/timer.hpp>
 
 #include "atcommand.hpp"
@@ -58,6 +59,10 @@ using namespace rathena;
 // We forward-declare them here so plugin.cpp can call them for script push wrappers.
 struct script_data* push_val2(struct script_stack* stack, enum c_op type, int64 val, struct reg_db* ref);
 struct script_data* push_str(struct script_stack* stack, enum c_op type, char* str);
+
+// packetdb_addpacket is defined in clif.cpp without a header declaration.
+void packetdb_addpacket(uint16 cmd, uint16 length,
+                        void (*func)(int32, map_session_data*), ...);
 
 // ============================================================
 // Hook chain and plugin registry
@@ -89,6 +94,11 @@ static std::vector<LoadedPlugin> loaded_plugins;
 // `script_free_state` calls plugin_script_state_freed() to drop entries
 // when the engine reclaims a state, so resume() on a stale token is safe.
 static std::unordered_set<script_state*> suspended_states;
+
+// Tracks every packet id currently mapped to a plugin-supplied handler.
+// plugin_manager_final() walks this set to null out the slots, preventing
+// the engine from calling into a function that lives in a now-unloaded DLL.
+static std::unordered_set<uint16_t> plugin_packet_ids;
 
 // ============================================================
 // Hook management API implementation
@@ -569,6 +579,53 @@ static void api_log_error  (const char* msg) { ShowError  ("%s\n", msg ? msg : "
 static void api_log_debug  (const char* msg) { ShowDebug  ("%s\n", msg ? msg : ""); }
 
 // ============================================================
+// Packet API wrappers
+// ============================================================
+
+static bool api_packet_register(uint16_t cmd, int16_t length, plugin_packet_func func)
+{
+	if (!func || cmd < MIN_PACKET_DB || cmd > MAX_PACKET_DB)
+		return false;
+	// `packetdb_addpacket` is variadic with offset list terminated by 0.
+	// Plugins compute their own offsets via read_b/w/l, so we pass none.
+	packetdb_addpacket(cmd, static_cast<uint16>(length),
+	                   reinterpret_cast<void(*)(int32, map_session_data*)>(func),
+	                   0);
+	plugin_packet_ids.insert(cmd);
+	return true;
+}
+
+static bool api_packet_unregister(uint16_t cmd)
+{
+	if (cmd < MIN_PACKET_DB || cmd > MAX_PACKET_DB)
+		return false;
+	packetdb_addpacket(cmd, 0, nullptr, 0);
+	plugin_packet_ids.erase(cmd);
+	return true;
+}
+
+static uint8_t  api_packet_read_b(int32_t fd, int32_t off) { return RFIFOB(fd, off); }
+static uint16_t api_packet_read_w(int32_t fd, int32_t off) { return RFIFOW(fd, off); }
+static uint32_t api_packet_read_l(int32_t fd, int32_t off) { return RFIFOL(fd, off); }
+static const char* api_packet_read_str(int32_t fd, int32_t off) { return RFIFOCP(fd, off); }
+static int32_t  api_packet_read_rest(int32_t fd) { return static_cast<int32_t>(RFIFOREST(fd)); }
+
+static void api_packet_send_self(int32_t fd, const void* data, int32_t len)
+{
+	if (!data || len <= 0 || !session_isActive(fd)) return;
+	WFIFOHEAD(fd, len);
+	std::memcpy(WFIFOP(fd, 0), data, len);
+	WFIFOSET(fd, len);
+}
+
+static void api_packet_send_target(block_list* bl, const void* data,
+                                   int32_t len, int32_t target)
+{
+	if (!data || len <= 0) return;
+	clif_send(data, len, bl, static_cast<send_target>(target));
+}
+
+// ============================================================
 // Main API struct — handed to every plugin on init
 // ============================================================
 
@@ -711,6 +768,19 @@ static plugin_api_t s_api = {
 		api_log_error,
 		api_log_debug,
 	},
+
+	// packet sub-struct
+	{
+		api_packet_register,
+		api_packet_unregister,
+		api_packet_read_b,
+		api_packet_read_w,
+		api_packet_read_l,
+		api_packet_read_str,
+		api_packet_read_rest,
+		api_packet_send_self,
+		api_packet_send_target,
+	},
 };
 
 // ============================================================
@@ -834,6 +904,12 @@ void plugin_manager_final(void)
 {
 	// Clear plugin @commands before unloading DLLs — prevents dangling function pointers
 	atcommand_plugin_final();
+
+	// Clear plugin-registered client packets for the same reason: clif_parse
+	// must not dispatch into a function whose DLL is about to vanish.
+	for (uint16_t cmd : plugin_packet_ids)
+		packetdb_addpacket(cmd, 0, nullptr, 0);
+	plugin_packet_ids.clear();
 
 	for (auto it = loaded_plugins.rbegin(); it != loaded_plugins.rend(); ++it) {
 		if (it->pfn_final)
