@@ -79,7 +79,7 @@ WLOG_DEFINE(wlog_error,   error)
 //
 // Lets a GM reload all mods at runtime: `workshop_reload;` from a script.
 
-static int32_t buildin_workshop_reload(script_state* st) {
+static int32_t buildin_workshop_reload(script_state* st, void* /*user_data*/) {
     workshop::stop_event_system();
     workshop::LuaBridge::instance().shutdown();
     workshop::LuaBridge::instance().init();
@@ -132,7 +132,7 @@ PLUGIN_API bool plugin_init(plugin_api_t* api) {
         wlog_warning("some mods failed to load");
     }
 
-    api->script_addcommand("workshop_reload", "", buildin_workshop_reload);
+    api->script_addcommand("workshop_reload", "", buildin_workshop_reload, nullptr);
 
     // Mods have registered their on_clock/on_timer handlers — start ticking.
     workshop::start_event_system();

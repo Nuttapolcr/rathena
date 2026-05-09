@@ -28,19 +28,26 @@ namespace {
 
 // ---- registry of Lua callbacks bound to plugin hooks / commands ----
 //
-// plugin_api expects a C function pointer for every hook & script command,
-// but mods register Lua functions. We keep a single trampoline per C
-// callback slot and look up the Lua function at dispatch time using a
-// registry-ref index stored in the trampoline's closure upvalue (for hooks)
-// or in this map (for commands, which can't take user_data).
+// plugin_api passes a `user_data` closure pointer back to every script
+// command / atcommand / hook callback, so we allocate one record per
+// registration and hand its address to the engine. On reload the same
+// record is reused — only its Lua ref is updated to point at the freshly
+// loaded function — so the engine's command tables stay valid across
+// Lua state recreations.
 
-struct LuaCallback {
-    int ref;                    // luaL_ref into LUA_REGISTRYINDEX
-    std::string name;           // for diagnostics
+struct LuaScriptCmd {
+    int         ref;       // luaL_ref into LUA_REGISTRYINDEX
+    std::string name;
+    std::string spec;
 };
 
-static std::map<std::string, LuaCallback> g_atcmd_callbacks;
-static std::map<std::string, LuaCallback> g_buildin_callbacks;
+struct LuaAtcmd {
+    int         ref;
+    std::string name;
+};
+
+static std::map<std::string, LuaScriptCmd*> g_buildin_by_name;
+static std::map<std::string, LuaAtcmd*>     g_atcmd_by_name;
 
 // Hooks: one entry per (hook_type, ref). Stored separately so we can clean up.
 struct HookCallback {
@@ -587,18 +594,23 @@ static int lw_get_timer_tick(lua_State* L) {
 
 // ---- atcommand registration ----
 
-static int32_t atcmd_dispatch(map_session_data* sd, const char* command,
-                              const char* message) {
-    auto it = g_atcmd_callbacks.find(command + 1); // skip '@' or '#'
-    if (it == g_atcmd_callbacks.end()) return 0;
+static int32_t atcmd_dispatch(map_session_data* sd, const char* /*command*/,
+                              const char* message, void* user_data) {
+    auto* reg = static_cast<LuaAtcmd*>(user_data);
+    if (!reg) return 0;
     lua_State* L = L_get();
     if (!L) return 0;
 
-    lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, reg->ref);
+    if (!lua_isfunction(L, -1)) {
+        // Stale ref (e.g. mid-reload). Treat as not handled.
+        lua_pop(L, 1);
+        return 0;
+    }
     push_player(L, sd);
     lua_pushstring(L, message ? message : "");
     if (lua_pcall(L, 2, 1, 0) != LUA_OK) {
-        wlog_warning("atcmd '%s' error: %s", it->first.c_str(),
+        wlog_warning("atcmd '%s' error: %s", reg->name.c_str(),
                      lua_tostring(L, -1));
         lua_pop(L, 1);
         return 0;
@@ -610,18 +622,31 @@ static int32_t atcmd_dispatch(map_session_data* sd, const char* command,
 
 // register_atcmd("name", level, fn)
 //   fn(player, args_string) -> int
+//
+// Re-registering the same name overwrites the existing handler; the
+// underlying record (and the engine's binding to it) stays put across
+// reloads, so we don't need to ask the engine to unregister.
 static int lw_register_atcmd(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     int level = (int)luaL_optinteger(L, 2, 0);
     luaL_checktype(L, 3, LUA_TFUNCTION);
 
     lua_pushvalue(L, 3);
-    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    int new_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
-    LuaCallback cb{ref, name};
-    g_atcmd_callbacks[name] = cb;
+    auto it = g_atcmd_by_name.find(name);
+    if (it != g_atcmd_by_name.end()) {
+        // Reload path: drop the old function ref, keep the user_data pointer
+        // the engine already holds.
+        luaL_unref(L, LUA_REGISTRYINDEX, it->second->ref);
+        it->second->ref = new_ref;
+        lua_pushboolean(L, 1);
+        return 1;
+    }
 
-    bool ok = g_api->atcmd.register_cmd(name, level, atcmd_dispatch);
+    auto* reg = new LuaAtcmd{new_ref, name};
+    g_atcmd_by_name[name] = reg;
+    bool ok = g_api->atcmd.register_cmd(name, level, atcmd_dispatch, reg);
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
@@ -705,26 +730,32 @@ static void drive_coro(BuildinCoro* coro, int nargs) {
     if (token) g_api->script.resume(token);
 }
 
-static int32_t buildin_dispatch_inner(script_state* st, const std::string& name,
-                                      const std::string& spec) {
-    auto it = g_buildin_callbacks.find(name);
-    if (it == g_buildin_callbacks.end()) return PLUGIN_SCRIPT_CMD_FAILURE;
+static int32_t buildin_dispatch(script_state* st, void* user_data) {
+    auto* reg = static_cast<LuaScriptCmd*>(user_data);
+    if (!reg) return PLUGIN_SCRIPT_CMD_FAILURE;
     lua_State* L = L_get();
     if (!L) return PLUGIN_SCRIPT_CMD_FAILURE;
 
     auto* coro = new BuildinCoro();
     coro->st   = st;
-    coro->name = name;
+    coro->name = reg->name;
     coro->T    = lua_newthread(L);
     coro->thread_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
-    // Push the registered Lua function onto T's stack.
-    lua_rawgeti(coro->T, LUA_REGISTRYINDEX, it->second.ref);
+    lua_rawgeti(coro->T, LUA_REGISTRYINDEX, reg->ref);
+    if (!lua_isfunction(coro->T, -1)) {
+        // Stale ref (e.g. mid-reload). Push 0 and bail without driving.
+        lua_pop(coro->T, 1);
+        cleanup_coro(coro);
+        g_api->script.pushint(st, 0);
+        return PLUGIN_SCRIPT_CMD_SUCCESS;
+    }
 
     map_session_data* sd = g_api->script.rid2sd(st);
     push_player(coro->T, sd);
 
     int nargs = 1; // player table
+    const std::string& spec = reg->spec;
     int n = (int)spec.size();
     for (int i = 0; i < n; ++i) {
         char c = spec[i];
@@ -809,105 +840,33 @@ static int lw_script_resume(lua_State* L) {
     return 0;
 }
 
-// Each registered buildin needs its own C function so plugin_api can route
-// to the right Lua callback. We pre-allocate a small pool of trampolines.
-//
-// (Plugin API takes a function pointer with no closure data, so we can't
-//  multiplex through a single dispatcher unless we know the command name.
-//  These closures keep their name as a static so the dispatcher can look up
-//  the matching callback.)
-
-#define BUILDIN_TRAMPOLINE(N)                                            \
-    static std::string g_buildin_name_##N;                               \
-    static std::string g_buildin_spec_##N;                               \
-    static int32_t buildin_dispatch_##N(script_state* st) {              \
-        return buildin_dispatch_inner(st, g_buildin_name_##N,            \
-                                      g_buildin_spec_##N);               \
-    }
-
-BUILDIN_TRAMPOLINE(0)  BUILDIN_TRAMPOLINE(1)  BUILDIN_TRAMPOLINE(2)
-BUILDIN_TRAMPOLINE(3)  BUILDIN_TRAMPOLINE(4)  BUILDIN_TRAMPOLINE(5)
-BUILDIN_TRAMPOLINE(6)  BUILDIN_TRAMPOLINE(7)  BUILDIN_TRAMPOLINE(8)
-BUILDIN_TRAMPOLINE(9)  BUILDIN_TRAMPOLINE(10) BUILDIN_TRAMPOLINE(11)
-BUILDIN_TRAMPOLINE(12) BUILDIN_TRAMPOLINE(13) BUILDIN_TRAMPOLINE(14)
-BUILDIN_TRAMPOLINE(15) BUILDIN_TRAMPOLINE(16) BUILDIN_TRAMPOLINE(17)
-BUILDIN_TRAMPOLINE(18) BUILDIN_TRAMPOLINE(19) BUILDIN_TRAMPOLINE(20)
-BUILDIN_TRAMPOLINE(21) BUILDIN_TRAMPOLINE(22) BUILDIN_TRAMPOLINE(23)
-BUILDIN_TRAMPOLINE(24) BUILDIN_TRAMPOLINE(25) BUILDIN_TRAMPOLINE(26)
-BUILDIN_TRAMPOLINE(27) BUILDIN_TRAMPOLINE(28) BUILDIN_TRAMPOLINE(29)
-BUILDIN_TRAMPOLINE(30) BUILDIN_TRAMPOLINE(31)
-#undef BUILDIN_TRAMPOLINE
-
-static plugin_script_func g_buildin_slots[] = {
-    buildin_dispatch_0,  buildin_dispatch_1,  buildin_dispatch_2,
-    buildin_dispatch_3,  buildin_dispatch_4,  buildin_dispatch_5,
-    buildin_dispatch_6,  buildin_dispatch_7,  buildin_dispatch_8,
-    buildin_dispatch_9,  buildin_dispatch_10, buildin_dispatch_11,
-    buildin_dispatch_12, buildin_dispatch_13, buildin_dispatch_14,
-    buildin_dispatch_15, buildin_dispatch_16, buildin_dispatch_17,
-    buildin_dispatch_18, buildin_dispatch_19, buildin_dispatch_20,
-    buildin_dispatch_21, buildin_dispatch_22, buildin_dispatch_23,
-    buildin_dispatch_24, buildin_dispatch_25, buildin_dispatch_26,
-    buildin_dispatch_27, buildin_dispatch_28, buildin_dispatch_29,
-    buildin_dispatch_30, buildin_dispatch_31,
-};
-
-static std::string* const g_buildin_names[] = {
-    &g_buildin_name_0,  &g_buildin_name_1,  &g_buildin_name_2,
-    &g_buildin_name_3,  &g_buildin_name_4,  &g_buildin_name_5,
-    &g_buildin_name_6,  &g_buildin_name_7,  &g_buildin_name_8,
-    &g_buildin_name_9,  &g_buildin_name_10, &g_buildin_name_11,
-    &g_buildin_name_12, &g_buildin_name_13, &g_buildin_name_14,
-    &g_buildin_name_15, &g_buildin_name_16, &g_buildin_name_17,
-    &g_buildin_name_18, &g_buildin_name_19, &g_buildin_name_20,
-    &g_buildin_name_21, &g_buildin_name_22, &g_buildin_name_23,
-    &g_buildin_name_24, &g_buildin_name_25, &g_buildin_name_26,
-    &g_buildin_name_27, &g_buildin_name_28, &g_buildin_name_29,
-    &g_buildin_name_30, &g_buildin_name_31,
-};
-
-static std::string* const g_buildin_specs[] = {
-    &g_buildin_spec_0,  &g_buildin_spec_1,  &g_buildin_spec_2,
-    &g_buildin_spec_3,  &g_buildin_spec_4,  &g_buildin_spec_5,
-    &g_buildin_spec_6,  &g_buildin_spec_7,  &g_buildin_spec_8,
-    &g_buildin_spec_9,  &g_buildin_spec_10, &g_buildin_spec_11,
-    &g_buildin_spec_12, &g_buildin_spec_13, &g_buildin_spec_14,
-    &g_buildin_spec_15, &g_buildin_spec_16, &g_buildin_spec_17,
-    &g_buildin_spec_18, &g_buildin_spec_19, &g_buildin_spec_20,
-    &g_buildin_spec_21, &g_buildin_spec_22, &g_buildin_spec_23,
-    &g_buildin_spec_24, &g_buildin_spec_25, &g_buildin_spec_26,
-    &g_buildin_spec_27, &g_buildin_spec_28, &g_buildin_spec_29,
-    &g_buildin_spec_30, &g_buildin_spec_31,
-};
-
-static size_t g_buildin_used = 0;
-static constexpr size_t BUILDIN_SLOT_MAX =
-    sizeof(g_buildin_slots) / sizeof(g_buildin_slots[0]);
-
 // register_buildin("name", "argspec", fn)
 //   argspec follows rAthena conventions: 'i' = number, 's' = string.
 //   fn(player, arg1, arg2, ...) is called when the command runs.
+//
+// Re-registering the same name updates the bound Lua function while
+// keeping the engine-side registration intact. There's no longer a
+// hard cap on the number of registered buildins.
 static int lw_register_buildin(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     const char* spec = luaL_checkstring(L, 2);
     luaL_checktype(L, 3, LUA_TFUNCTION);
 
-    if (g_buildin_used >= BUILDIN_SLOT_MAX) {
-        wlog_error("register_buildin: slot pool exhausted (%zu max)",
-                   BUILDIN_SLOT_MAX);
-        lua_pushboolean(L, 0);
+    lua_pushvalue(L, 3);
+    int new_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    auto it = g_buildin_by_name.find(name);
+    if (it != g_buildin_by_name.end()) {
+        luaL_unref(L, LUA_REGISTRYINDEX, it->second->ref);
+        it->second->ref  = new_ref;
+        it->second->spec = spec;   // tolerate spec changes between reloads
+        lua_pushboolean(L, 1);
         return 1;
     }
 
-    lua_pushvalue(L, 3);
-    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-
-    size_t slot = g_buildin_used++;
-    *g_buildin_names[slot] = name;
-    *g_buildin_specs[slot] = spec;
-    g_buildin_callbacks[name] = LuaCallback{ref, name};
-
-    bool ok = g_api->script_addcommand(name, spec, g_buildin_slots[slot]);
+    auto* reg = new LuaScriptCmd{new_ref, name, spec};
+    g_buildin_by_name[name] = reg;
+    bool ok = g_api->script_addcommand(name, spec, buildin_dispatch, reg);
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
@@ -1150,6 +1109,11 @@ void stop_event_system() {
     // Drop registry refs we own. The Lua state is typically about to be
     // closed anyway, but explicit cleanup keeps the door open for hot
     // reload paths that recreate the VM in place.
+    //
+    // Buildin / atcommand records are intentionally NOT freed here:
+    // the engine's command tables still point at them as user_data, so
+    // re-registration on reload reuses the same record (only the Lua
+    // ref is updated). They live until plugin_final.
     if (lua_State* L = L_get()) {
         for (auto& kv : g_event_handlers) {
             for (int r : kv.second) {
@@ -1161,9 +1125,18 @@ void stop_event_system() {
                 luaL_unref(L, LUA_REGISTRYINDEX, cb.ref);
             }
         }
+        for (auto& kv : g_buildin_by_name) {
+            luaL_unref(L, LUA_REGISTRYINDEX, kv.second->ref);
+            kv.second->ref = LUA_NOREF;
+        }
+        for (auto& kv : g_atcmd_by_name) {
+            luaL_unref(L, LUA_REGISTRYINDEX, kv.second->ref);
+            kv.second->ref = LUA_NOREF;
+        }
     }
     g_event_handlers.clear();
     g_named_timers.clear();
+    g_hook_callbacks.clear();
 }
 
 } // namespace workshop
