@@ -91,6 +91,7 @@ static bool parse_modinfo(const std::string& mod_dir, ModInfo& mi) {
     mi.dependencies = read_string_seq(body["dependencies"]);
     mi.load_order   = body["load_order"] ? body["load_order"].as<int>() : 100;
     mi.on_init      = body["on_init"]    ? body["on_init"].as<std::string>() : "";
+    mi.enabled      = body["enabled"]    ? body["enabled"].as<bool>()      : true;
 
     if (mi.scripts.empty()) {
         wlog_warning("%s: 'scripts' list is empty — mod will load nothing",
@@ -159,13 +160,20 @@ bool ModLoader::discover(const std::string& mods_dir) {
 
     for (auto& sub : list_subdirs(mods_dir)) {
         ModInfo mi;
-        if (parse_modinfo(mods_dir + "/" + sub, mi)) {
-            raw.push_back(std::move(mi));
+        if (!parse_modinfo(mods_dir + "/" + sub, mi)) continue;
+        if (!mi.enabled) {
+            // Disabled mods are reported but excluded from dependency
+            // resolution — anything that depends on them will surface as
+            // a "missing dependency" error, which is the right signal.
+            wlog_status("mod '%s' is disabled (enabled: false in modinfo.yml)",
+                        mi.name.c_str());
+            continue;
         }
+        raw.push_back(std::move(mi));
     }
 
     if (raw.empty()) {
-        wlog_status("no mods found in %s", mods_dir.c_str());
+        wlog_status("no enabled mods found in %s", mods_dir.c_str());
         return true;
     }
 
@@ -226,9 +234,12 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "# modinfo.yml — describes a workshop mod.\n"
         "#\n"
         "# Required:  name, scripts\n"
-        "# Optional:  version, author, description, dependencies, load_order, on_init\n"
+        "# Optional:  enabled (default true), version, author, description,\n"
+        "#            dependencies, load_order, on_init\n"
         "\n"
         "name: example\n"
+        "# Disabled by default — flip to true (or remove this line) to load it.\n"
+        "enabled: false\n"
         "version: 0.1.0\n"
         "author: rAthena Workshop\n"
         "description: Example mod scaffolded automatically on first run.\n"

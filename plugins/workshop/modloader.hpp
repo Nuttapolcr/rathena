@@ -16,6 +16,7 @@ struct ModInfo {
     std::vector<std::string> dependencies;  // names of mods that must load first
     int load_order = 100;                   // lower runs first; default 100
     std::string on_init;                    // optional Lua function name to call after load
+    bool enabled = true;                    // false = mod is read but not loaded
 };
 
 class ModLoader {
