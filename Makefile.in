@@ -30,6 +30,7 @@ endif
 	web \
 	tools \
 	import \
+	plugin \
 	clean help \
 	install uninstall bin-clean \
 
@@ -70,6 +71,19 @@ yaml-cpp:
 
 httplib:
 	@$(MAKE) -C 3rdparty/httplib
+
+plugin:
+	@for dir in $$(find plugins -mindepth 1 -maxdepth 1 -type d | sort); do \
+		name=$$(basename $$dir); \
+		srcs=$$(find $$dir -maxdepth 1 -name '*.cpp'); \
+		if [ -n "$$srcs" ]; then \
+			echo "  Building plugin: $$name"; \
+			g++ -std=c++17 -shared -fPIC -fvisibility=hidden -Wall -Wextra \
+			    -I src \
+			    -o $$dir/$$name.so \
+			    $$srcs || exit 1; \
+		fi; \
+	done
 
 import:
 # 1) create conf/import folder
@@ -112,6 +126,7 @@ help:
 	@echo "'web'         - builds web server"
 	@echo "'tools'       - builds all the tools in src/tools"
 	@echo "'import'      - builds conf/import, conf/msg_conf/import and db/import folders from their template folders (x-tmpl)"
+	@echo "'plugin'      - builds all plugins found under plugins/*/ into .so shared libraries"
 	@echo "'all'         - builds all the above targets"
 	@echo "'server'      - builds servers (targets 'common' 'login' 'char' 'map' and 'import')"
 	@echo "'clean'       - cleans builds and objects"
