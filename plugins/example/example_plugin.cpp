@@ -11,6 +11,9 @@
  *   plugin_give_item 512, 10;    // give 10 Apples to the attached player
  *   plugin_spawn_mob 1002, 3;    // spawn 3 Porings at the player's position
  *   plugin_warp "prontera", 156, 191;
+ *   plugin_announce "Hello!";    // server-wide yellow broadcast
+ *   plugin_count_mobs;           // count mobs on the attached player's map
+ *   plugin_delayed_give 512, 5;  // give an Apple after 5 seconds
  */
 
 #include <cstdio>
@@ -116,9 +119,14 @@ static int on_item_use(void* data, void* /*user_data*/)
 static int on_item_pickup(void* data, void* /*user_data*/)
 {
 	auto* d = static_cast<plugin_item_pickup_t*>(data);
-	if (d->sd && d->it)
-		printf("[example] item_pickup: %s picks %u x%d\n",
-		       g_api->pc.get_name(d->sd), g_api->item_api.get_nameid(d->it), d->amount);
+	if (d->sd && d->it) {
+		uint32_t nameid = g_api->item_api.get_nameid(d->it);
+		const char* iname = g_api->item_api.db_get_ename(nameid);
+		char buf[160];
+		snprintf(buf, sizeof(buf), "item_pickup: %s picks %s (%u) x%d",
+		         g_api->pc.get_name(d->sd), iname, nameid, d->amount);
+		g_api->log.info(buf);
+	}
 	return HOOK_CONTINUE;
 }
 
@@ -215,6 +223,87 @@ static int32_t buildin_plugin_warp(script_state* st)
 	return PLUGIN_SCRIPT_CMD_SUCCESS;
 }
 
+// plugin_announce "<message>";
+// Server-wide yellow broadcast — demonstrates clif.broadcast.
+static int32_t buildin_plugin_announce(script_state* st)
+{
+	const char* msg = g_api->script.getstr(st, 2);
+	if (msg) {
+		// type=0 (BC_DEFAULT yellow), target=0 (ALL_CLIENT)
+		g_api->clif.broadcast(nullptr, msg, 0, 0);
+	}
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
+// plugin_count_mobs;
+// Counts mobs on the attached player's map — demonstrates map.foreachinmap.
+static int32_t buildin_plugin_count_mobs(script_state* st)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+
+	auto count_cb = [](block_list* /*bl*/, void* user) -> int32_t {
+		++*static_cast<int32_t*>(user);
+		return 1;
+	};
+
+	int32_t count = 0;
+	int16_t m = g_api->pc.get_mapid(sd);
+	const int32_t BL_MOB_MASK = 1 << PLUGIN_BL_MOB; // type bitmask
+	g_api->map.foreachinmap(count_cb, &count, m, BL_MOB_MASK);
+
+	g_api->script.pushint(st, count);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
+// Timer callback for plugin_delayed_give — fires once after the requested delay.
+// `id` carries the player's account_id, `data` packs nameid (high) | amount (low).
+static int32_t plugin_delayed_give_tick(int32_t /*tid*/, int64_t /*tick*/,
+                                        int32_t id, intptr_t data)
+{
+	map_session_data* sd = g_api->map.id2sd(id);
+	if (!sd) return 0;
+
+	plugin_item_t it = {};
+	it.nameid   = static_cast<uint32_t>((data >> 32) & 0xFFFFFFFF);
+	it.identify = 1;
+	int32_t amount = static_cast<int32_t>(data & 0xFFFFFFFF);
+
+	g_api->pc.additem(sd, &it, amount, 7); // LOG_TYPE_SCRIPT
+	g_api->clif.progressbar_abort(sd);
+	g_api->pc.message(g_api->pc.get_fd(sd), "Your delayed item has arrived!");
+	return 0;
+}
+
+// plugin_delayed_give <item_id>, <delay_seconds>;
+// Demonstrates timer.add_timer + clif.progressbar.
+static int32_t buildin_plugin_delayed_give(script_state* st)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+
+	auto nameid = static_cast<uint32_t>(g_api->script.getnum(st, 2));
+	auto secs   = static_cast<int32_t>(g_api->script.getnum(st, 3));
+	if (secs <= 0) secs = 1;
+
+	// 0x00FF00 = green progressbar
+	g_api->clif.progressbar(sd, 0x00FF00, secs);
+
+	intptr_t data = (static_cast<intptr_t>(nameid) << 32) | 1; // amount=1
+	int64_t  when = g_api->timer.gettick() + (int64_t)secs * 1000;
+	g_api->timer.add_timer(when, plugin_delayed_give_tick,
+	                       g_api->pc.get_aid(sd), data);
+
+	g_api->script.pushint(st, 1);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
 // ---- Plugin lifecycle ----
 
 PLUGIN_API bool plugin_init(plugin_api_t* api)
@@ -232,12 +321,15 @@ PLUGIN_API bool plugin_init(plugin_api_t* api)
 	api->hook_add(HOOK_ITEM_DROP,      on_item_drop,      nullptr, 100);
 	api->hook_add(HOOK_ITEM_EQUIP,     on_item_equip,     nullptr, 100);
 
-	api->script_addcommand("plugin_hello",      "s",   buildin_plugin_hello);
-	api->script_addcommand("plugin_give_item",  "ii",  buildin_plugin_give_item);
-	api->script_addcommand("plugin_spawn_mob",  "ii",  buildin_plugin_spawn_mob);
-	api->script_addcommand("plugin_warp",       "sii", buildin_plugin_warp);
+	api->script_addcommand("plugin_hello",         "s",   buildin_plugin_hello);
+	api->script_addcommand("plugin_give_item",     "ii",  buildin_plugin_give_item);
+	api->script_addcommand("plugin_spawn_mob",     "ii",  buildin_plugin_spawn_mob);
+	api->script_addcommand("plugin_warp",          "sii", buildin_plugin_warp);
+	api->script_addcommand("plugin_announce",      "s",   buildin_plugin_announce);
+	api->script_addcommand("plugin_count_mobs",    "",    buildin_plugin_count_mobs);
+	api->script_addcommand("plugin_delayed_give",  "ii",  buildin_plugin_delayed_give);
 
-	printf("[example] Plugin loaded. Commands: plugin_hello, plugin_give_item, plugin_spawn_mob, plugin_warp\n");
+	api->log.status("[example] Plugin loaded. New commands: plugin_announce, plugin_count_mobs, plugin_delayed_give");
 	return true;
 }
 

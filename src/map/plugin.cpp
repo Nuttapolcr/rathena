@@ -4,6 +4,7 @@
 #include "plugin.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -33,9 +34,12 @@
 #include <common/mapindex.hpp>
 #include <common/showmsg.hpp>
 
+#include <common/timer.hpp>
+
 #include "atcommand.hpp"
 #include "clif.hpp"
 #include "homunculus.hpp"
+#include "itemdb.hpp"
 #include "map.hpp"
 #include "mob.hpp"
 #include "npc.hpp"
@@ -360,6 +364,177 @@ static int32_t api_storage_open(map_session_data* sd)
 }
 
 // ============================================================
+// Map iteration wrappers
+// ============================================================
+
+// Trampoline that forwards va_list-style block_list iteration into the
+// plugin's plain-pointer callback signature.
+static int32 plugin_blcb_trampoline(block_list* bl, va_list ap)
+{
+	plugin_blcb cb = va_arg(ap, plugin_blcb);
+	void*       ud = va_arg(ap, void*);
+	return cb(bl, ud);
+}
+
+static int32_t api_map_foreachinmap(plugin_blcb cb, void* user, int16_t m, int32_t type_mask)
+{
+	if (!cb) return 0;
+	return map_foreachinmap(plugin_blcb_trampoline, m, type_mask, cb, user);
+}
+
+static int32_t api_map_foreachinarea(plugin_blcb cb, void* user, int16_t m,
+                                     int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                                     int32_t type_mask)
+{
+	if (!cb) return 0;
+	return map_foreachinarea(plugin_blcb_trampoline, m, x0, y0, x1, y1, type_mask, cb, user);
+}
+
+static int32_t api_map_get_mapflag(int16_t m, int32_t flag)
+{
+	return map_getmapflag_sub(m, static_cast<e_mapflag>(flag), nullptr);
+}
+
+// ============================================================
+// Item DB wrappers
+// ============================================================
+
+static bool api_item_db_exists(uint32_t nameid)
+{
+	return item_db.exists(static_cast<t_itemid>(nameid));
+}
+
+static const char* api_item_db_get_name(uint32_t nameid)
+{
+	auto id = item_db.find(static_cast<t_itemid>(nameid));
+	return id ? id->name.c_str() : "";
+}
+
+static const char* api_item_db_get_ename(uint32_t nameid)
+{
+	auto id = item_db.find(static_cast<t_itemid>(nameid));
+	return id ? id->ename.c_str() : "";
+}
+
+static int32_t api_item_db_get_type(uint32_t nameid)
+{
+	auto id = item_db.find(static_cast<t_itemid>(nameid));
+	return id ? static_cast<int32_t>(id->type) : -1;
+}
+
+// ============================================================
+// Skill DB wrappers
+// ============================================================
+
+static const char* api_skill_get_name(uint16_t skill_id)
+{
+	const char* n = skill_get_name(skill_id);
+	return n ? n : "";
+}
+
+static int32_t api_skill_get_inf(uint16_t skill_id)
+{
+	return skill_get_inf(skill_id);
+}
+
+static uint16_t api_skill_name2id(const char* name)
+{
+	return name ? skill_name2id(name) : 0;
+}
+
+// ============================================================
+// Clif wrappers
+// ============================================================
+
+static void api_clif_displaymessage(int32_t fd, const char* msg)
+{
+	if (msg) clif_displaymessage(fd, msg);
+}
+
+static void api_clif_emotion(block_list* bl, int32_t emote)
+{
+	if (bl) clif_emotion(*bl, static_cast<emotion_type>(emote));
+}
+
+static void api_clif_specialeffect(block_list* bl, int32_t effect_id, int32_t target)
+{
+	if (bl) clif_specialeffect(bl, effect_id, static_cast<send_target>(target));
+}
+
+static void api_clif_specialeffect_single(block_list* bl, int32_t effect_id, int32_t fd)
+{
+	if (bl) clif_specialeffect_single(bl, effect_id, fd);
+}
+
+static void api_clif_progressbar(map_session_data* sd, uint32_t color, uint32_t seconds)
+{
+	if (sd) clif_progressbar(sd, color, seconds);
+}
+
+static void api_clif_progressbar_abort(map_session_data* sd)
+{
+	if (sd) clif_progressbar_abort(sd);
+}
+
+static void api_clif_broadcast(block_list* bl, const char* msg, int32_t type, int32_t target)
+{
+	if (!msg) return;
+	clif_broadcast(bl, msg, std::strlen(msg) + 1, type, static_cast<send_target>(target));
+}
+
+static void api_clif_messagecolor(block_list* bl, uint32_t color, const char* msg,
+                                  bool rgb2bgr, int32_t target)
+{
+	if (!msg) return;
+	clif_messagecolor_target(bl, color, msg, rgb2bgr,
+	                         static_cast<send_target>(target), nullptr);
+}
+
+// ============================================================
+// Timer wrappers
+// ============================================================
+
+static int64_t api_timer_gettick(void)
+{
+	return static_cast<int64_t>(gettick());
+}
+
+static int32_t api_timer_add_timer(int64_t tick, plugin_timer_func func,
+                                   int32_t id, intptr_t data)
+{
+	if (!func) return -1;
+	return add_timer(static_cast<t_tick>(tick),
+	                 reinterpret_cast<TimerFunc>(func), id, data);
+}
+
+static int32_t api_timer_add_timer_interval(int64_t tick, plugin_timer_func func,
+                                            int32_t id, intptr_t data, int32_t interval_ms)
+{
+	if (!func) return -1;
+	return add_timer_interval(static_cast<t_tick>(tick),
+	                          reinterpret_cast<TimerFunc>(func),
+	                          id, data, interval_ms);
+}
+
+static int32_t api_timer_delete_timer(int32_t tid, plugin_timer_func func)
+{
+	if (!func) return -1;
+	return delete_timer(tid, reinterpret_cast<TimerFunc>(func));
+}
+
+// ============================================================
+// Log (ShowXxx) wrappers
+// ============================================================
+// Plugins pass already-formatted strings; we forward as a single "%s" to
+// avoid format-string issues across DLL boundaries.
+
+static void api_log_info   (const char* msg) { ShowInfo   ("%s\n", msg ? msg : ""); }
+static void api_log_status (const char* msg) { ShowStatus ("%s\n", msg ? msg : ""); }
+static void api_log_warning(const char* msg) { ShowWarning("%s\n", msg ? msg : ""); }
+static void api_log_error  (const char* msg) { ShowError  ("%s\n", msg ? msg : ""); }
+static void api_log_debug  (const char* msg) { ShowDebug  ("%s\n", msg ? msg : ""); }
+
+// ============================================================
 // Main API struct — handed to every plugin on init
 // ============================================================
 
@@ -415,6 +590,9 @@ static plugin_api_t s_api = {
 		api_map_id2sd,
 		api_map_charid2sd,
 		api_map_nick2sd,
+		api_map_foreachinmap,
+		api_map_foreachinarea,
+		api_map_get_mapflag,
 	},
 
 	// status sub-struct
@@ -432,6 +610,10 @@ static plugin_api_t s_api = {
 	// item_api sub-struct
 	{
 		api_item_get_nameid,
+		api_item_db_exists,
+		api_item_db_get_name,
+		api_item_db_get_ename,
+		api_item_db_get_type,
 	},
 
 	// atcmd sub-struct
@@ -455,11 +637,43 @@ static plugin_api_t s_api = {
 	{
 		api_skill_get_lv,
 		api_skill_use_id,
+		api_skill_get_name,
+		api_skill_get_inf,
+		api_skill_name2id,
 	},
 
 	// storage sub-struct
 	{
 		api_storage_open,
+	},
+
+	// clif sub-struct
+	{
+		api_clif_displaymessage,
+		api_clif_emotion,
+		api_clif_specialeffect,
+		api_clif_specialeffect_single,
+		api_clif_progressbar,
+		api_clif_progressbar_abort,
+		api_clif_broadcast,
+		api_clif_messagecolor,
+	},
+
+	// timer sub-struct
+	{
+		api_timer_gettick,
+		api_timer_add_timer,
+		api_timer_add_timer_interval,
+		api_timer_delete_timer,
+	},
+
+	// log sub-struct
+	{
+		api_log_info,
+		api_log_status,
+		api_log_warning,
+		api_log_error,
+		api_log_debug,
 	},
 };
 

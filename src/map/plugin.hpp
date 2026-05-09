@@ -354,6 +354,14 @@ typedef int32_t (*plugin_atcmd_func)(struct map_session_data* sd,
                                      const char* command,
                                      const char* message);
 
+// Block-list iteration callback (for map.foreachinmap / foreachinarea).
+// Return value is summed by the caller; non-zero typically indicates "matched".
+typedef int32_t (*plugin_blcb)(struct block_list* bl, void* user_data);
+
+// Timer callback signature — matches map-server TimerFunc.
+typedef int32_t (*plugin_timer_func)(int32_t tid, int64_t tick,
+                                     int32_t id, intptr_t data);
+
 // ============================================================
 // Server function API sub-structs
 // ============================================================
@@ -430,6 +438,19 @@ struct plugin_map_api_t {
 	struct map_session_data* (*id2sd)    (int32_t id);
 	struct map_session_data* (*charid2sd)(int32_t charid);
 	struct map_session_data* (*nick2sd)  (const char* nick, bool allow_partial);
+
+	// Iterate every block_list in map `m` whose type bit is set in `type_mask`
+	// (e.g. PLUGIN_BL_PC=4 means pass `1<<4=16` for players, or use BL_ALL=0x1ff).
+	// Returns the sum of cb return values.
+	int32_t (*foreachinmap) (plugin_blcb cb, void* user, int16_t m, int32_t type_mask);
+
+	// Iterate every block_list in the rectangle [(x0,y0),(x1,y1)] on map `m`.
+	int32_t (*foreachinarea)(plugin_blcb cb, void* user, int16_t m,
+	                         int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+	                         int32_t type_mask);
+
+	// Read a mapflag (e_mapflag) for map `m`. Returns the flag value or 0.
+	int32_t (*get_mapflag)(int16_t m, int32_t flag);
 };
 
 // ---- Status (HP / SP manipulation) ----
@@ -456,6 +477,12 @@ struct plugin_bl_api_t {
 // ---- Item data accessors ----
 struct plugin_item_api_t {
 	uint32_t (*get_nameid)(struct item* it);
+
+	// item_db lookups (use these instead of including itemdb.hpp).
+	bool        (*db_exists)   (uint32_t nameid);
+	const char* (*db_get_name) (uint32_t nameid);  // internal name (e.g. "Apple")
+	const char* (*db_get_ename)(uint32_t nameid);  // display name (e.g. "Apple")
+	int32_t     (*db_get_type) (uint32_t nameid);  // IT_HEALING=0, IT_USABLE=2, IT_ETC=3, ...
 };
 
 // ---- Custom @commands ----
@@ -483,11 +510,75 @@ struct plugin_skill_api_t {
 	int32_t (*get_lv)(struct map_session_data* sd, uint16_t skill_id);
 	int32_t (*use_id)(struct map_session_data* sd, uint16_t skill_id,
 	                  uint16_t skill_lv, int32_t target_id);
+
+	// skill_db lookups (use these instead of including skill.hpp).
+	const char* (*get_name)(uint16_t skill_id);  // AEGIS name (e.g. "MG_FIREBOLT")
+	int32_t     (*get_inf) (uint16_t skill_id);  // INF_ATTACK_SKILL=1, INF_GROUND_SKILL=2, ...
+	uint16_t    (*name2id) (const char* name);   // 0 if not found
 };
 
 // ---- Storage ----
 struct plugin_storage_api_t {
 	int32_t (*open)(struct map_session_data* sd);
+};
+
+// ---- Clif (client packet) helpers ----
+// `target` values match enum send_target: ALL_CLIENT=0, ALL_SAMEMAP=1,
+// AREA=2, AREA_WOS=3, SELF=24, etc. See clif.hpp for the full list.
+struct plugin_clif_api_t {
+	// Send a plain text line to the player's chat window (same as pc.message).
+	void (*displaymessage)(int32_t fd, const char* msg);
+
+	// Trigger an emotion bubble above an entity. emote: 0=ET_SURPRISE,
+	// 1=ET_QUESTION, 2=ET_DELIGHT, ... see emotion_type in clif.hpp.
+	void (*emotion)(struct block_list* bl, int32_t emote);
+
+	// Play a special effect on/around an entity.
+	// effect_id: see effect_db.yml; target: SELF/AREA/etc.
+	void (*specialeffect)       (struct block_list* bl, int32_t effect_id, int32_t target);
+	void (*specialeffect_single)(struct block_list* bl, int32_t effect_id, int32_t fd);
+
+	// Show a progress bar above the player (color: 0xRRGGBB, seconds: duration).
+	void (*progressbar)      (struct map_session_data* sd, uint32_t color, uint32_t seconds);
+	void (*progressbar_abort)(struct map_session_data* sd);
+
+	// Server-wide / map-wide announce. type: BC_DEFAULT=0x00 (yellow),
+	// BC_BLUE=0x10, BC_WOE=0x20, etc. target: ALL_CLIENT=0, ALL_SAMEMAP=1, ...
+	void (*broadcast)(struct block_list* bl, const char* msg,
+	                  int32_t type, int32_t target);
+
+	// Colored chat message (color: 0xRRGGBB).
+	void (*messagecolor)(struct block_list* bl, uint32_t color, const char* msg,
+	                     bool rgb2bgr, int32_t target);
+};
+
+// ---- Timer ----
+// Times are millisecond ticks; use `gettick()` as a baseline.
+struct plugin_timer_api_t {
+	int64_t (*gettick)(void);
+
+	// One-shot timer. `tick` is the absolute wake-up tick (gettick() + delay_ms).
+	// Returns the timer id (use it with delete_timer).
+	int32_t (*add_timer)(int64_t tick, plugin_timer_func func,
+	                     int32_t id, intptr_t data);
+
+	// Repeating timer with the given interval (ms).
+	int32_t (*add_timer_interval)(int64_t tick, plugin_timer_func func,
+	                              int32_t id, intptr_t data, int32_t interval_ms);
+
+	// Cancel a timer; pass the same `func` you registered with.
+	int32_t (*delete_timer)(int32_t tid, plugin_timer_func func);
+};
+
+// ---- Logging (ShowXxx wrappers) ----
+// Plugins must format their own strings (e.g. via snprintf) before calling —
+// variadic format strings are not safe across DLL boundaries.
+struct plugin_log_api_t {
+	void (*info)   (const char* msg);
+	void (*status) (const char* msg);
+	void (*warning)(const char* msg);
+	void (*error)  (const char* msg);
+	void (*debug)  (const char* msg);
 };
 
 // ============================================================
@@ -510,6 +601,9 @@ struct plugin_api_t {
 	struct plugin_npc_api_t     npc;
 	struct plugin_skill_api_t   skill;
 	struct plugin_storage_api_t storage;
+	struct plugin_clif_api_t    clif;
+	struct plugin_timer_api_t   timer;
+	struct plugin_log_api_t     log;
 };
 
 // ---- Plugin metadata ----
