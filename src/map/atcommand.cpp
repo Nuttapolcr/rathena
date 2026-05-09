@@ -11926,6 +11926,7 @@ struct PluginAtCmdEntry {
 	std::string      name;
 	int              level;
 	AtPluginCmdFunc  func;
+	void*            user_data;
 };
 
 static std::vector<PluginAtCmdEntry> s_plugin_atcmds;
@@ -12059,7 +12060,7 @@ bool is_atcommand(const int32 fd, map_session_data* sd, const char* message, int
 					return false;
 				plugin_atcmd_execute_t hook_data = { ssd, command, params };
 				plugin_hook_fire(HOOK_ATCMD_EXECUTE, &hook_data);
-				if (pcmd.func(ssd, command, params) != 0) {
+				if (pcmd.func(ssd, command, params, pcmd.user_data) != 0) {
 					sprintf(output, msg_txt(sd, 154), command);
 					clif_displaymessage(fd, output);
 				} else {
@@ -12192,14 +12193,15 @@ void atcommand_doload(void) {
 // Plugin @command registry
 // ============================================================
 
-bool atcommand_plugin_register(const char* name, int level, AtPluginCmdFunc func)
+bool atcommand_plugin_register(const char* name, int level,
+                               AtPluginCmdFunc func, void* user_data)
 {
 	if (!name || !*name || !func)
 		return false;
 	for (auto& e : s_plugin_atcmds)
 		if (strcasecmp(e.name.c_str(), name) == 0)
 			return false; // already registered
-	s_plugin_atcmds.push_back({ name, level, func });
+	s_plugin_atcmds.push_back({ name, level, func, user_data });
 	return true;
 }
 

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include <common/mapindex.hpp>
 #include <common/showmsg.hpp>
 
+#include <common/socket.hpp>
 #include <common/timer.hpp>
 
 #include "atcommand.hpp"
@@ -59,6 +61,10 @@ using namespace rathena;
 struct script_data* push_val2(struct script_stack* stack, enum c_op type, int64 val, struct reg_db* ref);
 struct script_data* push_str(struct script_stack* stack, enum c_op type, char* str);
 
+// packetdb_addpacket is defined in clif.cpp without a header declaration.
+void packetdb_addpacket(uint16 cmd, uint16 length,
+                        void (*func)(int32, map_session_data*), ...);
+
 // ============================================================
 // Hook chain and plugin registry
 // ============================================================
@@ -73,6 +79,7 @@ struct PluginCmd {
 	std::string        name;
 	std::string        arg;
 	plugin_script_func func;
+	void*              user_data;
 };
 
 struct LoadedPlugin {
@@ -89,6 +96,17 @@ static std::vector<LoadedPlugin> loaded_plugins;
 // `script_free_state` calls plugin_script_state_freed() to drop entries
 // when the engine reclaims a state, so resume() on a stale token is safe.
 static std::unordered_set<script_state*> suspended_states;
+
+// Tracks every packet id currently mapped to a plugin-supplied handler,
+// along with the per-registration {func, user_data} closure. The engine
+// installs `plugin_packet_trampoline` (below) into packet_db, and the
+// trampoline looks up this map to invoke the real plugin function with
+// its user_data.
+struct PluginPacketEntry {
+	plugin_packet_func func;
+	void*              user_data;
+};
+static std::unordered_map<uint16_t, PluginPacketEntry> plugin_packet_handlers;
 
 // ============================================================
 // Hook management API implementation
@@ -114,13 +132,24 @@ static void impl_hook_remove(int type, plugin_hook_cb cb)
 		[cb](const HookEntry& e){ return e.cb == cb; }), chain.end());
 }
 
-static bool impl_script_addcommand(const char* name, const char* arg, plugin_script_func func)
+static bool impl_script_addcommand(const char* name, const char* arg,
+                                   plugin_script_func func, void* user_data)
 {
 	if (!name || !func)
 		return false;
 	int idx = static_cast<int>(plugin_cmds.size());
-	plugin_cmds.push_back({ name, arg ? arg : "*", func });
-	return script_plugin_register(name, arg ? arg : "*", func, idx);
+	plugin_cmds.push_back({ name, arg ? arg : "*", func, user_data });
+	return script_plugin_register(name, arg ? arg : "*", idx);
+}
+
+// Called by the script engine's plugin trampoline (see script.cpp).
+// Invokes the actual plugin function with its captured user_data.
+int32_t plugin_dispatch_script_cmd(int idx, script_state* st)
+{
+	if (idx < 0 || idx >= static_cast<int>(plugin_cmds.size()))
+		return PLUGIN_SCRIPT_CMD_FAILURE;
+	auto& c = plugin_cmds[idx];
+	return c.func(st, c.user_data);
 }
 
 // ============================================================
@@ -339,9 +368,10 @@ static uint32_t api_item_get_nameid(item* it)
 // Atcmd API wrappers
 // ============================================================
 
-static bool api_atcmd_register(const char* name, int level, plugin_atcmd_func func)
+static bool api_atcmd_register(const char* name, int level,
+                               plugin_atcmd_func func, void* user_data)
 {
-	return atcommand_plugin_register(name, level, func);
+	return atcommand_plugin_register(name, level, func, user_data);
 }
 
 // ============================================================
@@ -569,6 +599,64 @@ static void api_log_error  (const char* msg) { ShowError  ("%s\n", msg ? msg : "
 static void api_log_debug  (const char* msg) { ShowDebug  ("%s\n", msg ? msg : ""); }
 
 // ============================================================
+// Packet API wrappers
+// ============================================================
+
+// Single trampoline shared by every plugin-registered packet. Looks up
+// the {func, user_data} closure by cmd id from RFIFOW(fd, 0).
+static void plugin_packet_trampoline(int32 fd, map_session_data* sd)
+{
+	uint16_t cmd = RFIFOW(fd, 0);
+	auto it = plugin_packet_handlers.find(cmd);
+	if (it == plugin_packet_handlers.end()) return;
+	it->second.func(fd, sd, it->second.user_data);
+}
+
+static bool api_packet_register(uint16_t cmd, int16_t length,
+                                plugin_packet_func func, void* user_data)
+{
+	if (!func || cmd < MIN_PACKET_DB || cmd > MAX_PACKET_DB)
+		return false;
+	// `packetdb_addpacket` is variadic with offset list terminated by 0.
+	// Plugins compute their own offsets via read_b/w/l, so we pass none.
+	// We install our trampoline; the real func+user_data lives in the map.
+	packetdb_addpacket(cmd, static_cast<uint16>(length),
+	                   plugin_packet_trampoline, 0);
+	plugin_packet_handlers[cmd] = { func, user_data };
+	return true;
+}
+
+static bool api_packet_unregister(uint16_t cmd)
+{
+	if (cmd < MIN_PACKET_DB || cmd > MAX_PACKET_DB)
+		return false;
+	packetdb_addpacket(cmd, 0, nullptr, 0);
+	plugin_packet_handlers.erase(cmd);
+	return true;
+}
+
+static uint8_t  api_packet_read_b(int32_t fd, int32_t off) { return RFIFOB(fd, off); }
+static uint16_t api_packet_read_w(int32_t fd, int32_t off) { return RFIFOW(fd, off); }
+static uint32_t api_packet_read_l(int32_t fd, int32_t off) { return RFIFOL(fd, off); }
+static const char* api_packet_read_str(int32_t fd, int32_t off) { return RFIFOCP(fd, off); }
+static int32_t  api_packet_read_rest(int32_t fd) { return static_cast<int32_t>(RFIFOREST(fd)); }
+
+static void api_packet_send_self(int32_t fd, const void* data, int32_t len)
+{
+	if (!data || len <= 0 || !session_isActive(fd)) return;
+	WFIFOHEAD(fd, len);
+	std::memcpy(WFIFOP(fd, 0), data, len);
+	WFIFOSET(fd, len);
+}
+
+static void api_packet_send_target(block_list* bl, const void* data,
+                                   int32_t len, int32_t target)
+{
+	if (!data || len <= 0) return;
+	clif_send(data, len, bl, static_cast<send_target>(target));
+}
+
+// ============================================================
 // Main API struct — handed to every plugin on init
 // ============================================================
 
@@ -711,6 +799,19 @@ static plugin_api_t s_api = {
 		api_log_error,
 		api_log_debug,
 	},
+
+	// packet sub-struct
+	{
+		api_packet_register,
+		api_packet_unregister,
+		api_packet_read_b,
+		api_packet_read_w,
+		api_packet_read_l,
+		api_packet_read_str,
+		api_packet_read_rest,
+		api_packet_send_self,
+		api_packet_send_target,
+	},
 };
 
 // ============================================================
@@ -834,6 +935,12 @@ void plugin_manager_final(void)
 {
 	// Clear plugin @commands before unloading DLLs — prevents dangling function pointers
 	atcommand_plugin_final();
+
+	// Clear plugin-registered client packets for the same reason: clif_parse
+	// must not dispatch into a function whose DLL is about to vanish.
+	for (auto& kv : plugin_packet_handlers)
+		packetdb_addpacket(kv.first, 0, nullptr, 0);
+	plugin_packet_handlers.clear();
 
 	for (auto it = loaded_plugins.rbegin(); it != loaded_plugins.rend(); ++it) {
 		if (it->pfn_final)

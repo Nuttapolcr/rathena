@@ -2267,12 +2267,27 @@ static void add_buildin_func(void)
 	}
 }
 
+// Trampoline installed in str_data[].func for every plugin command.
+// Recovers the plugin's command index from str_data[].val and forwards
+// to plugin.cpp where the actual function + its user_data live.
+static int32 script_plugin_trampoline(struct script_state* st)
+{
+	struct script_data* data = &st->stack->stack_data[st->start];
+	if (data->type != C_NAME)
+		return SCRIPT_CMD_FAILURE;
+	int32 fn = static_cast<int32>(data->u.num);
+	int idx = static_cast<int>(str_data[fn].val - PLUGIN_CMD_BASE);
+	return plugin_dispatch_script_cmd(idx, st);
+}
+
 // Register a script command from a plugin. cmd_idx is the index into the
 // plugin's internal command list; it is stored offset by PLUGIN_CMD_BASE so
-// parse_callfunc can distinguish plugin commands from builtin ones.
-bool script_plugin_register(const char* name, const char* arg, plugin_script_func func, int cmd_idx)
+// parse_callfunc can distinguish plugin commands from builtin ones. The
+// actual plugin function lives in plugin.cpp and is reached via the
+// trampoline above so we can pass the registration's user_data through.
+bool script_plugin_register(const char* name, const char* arg, int cmd_idx)
 {
-	if (!name || !func)
+	if (!name)
 		return false;
 
 	const char* p = arg ? arg : "";
@@ -2296,7 +2311,7 @@ bool script_plugin_register(const char* name, const char* arg, plugin_script_fun
 
 	str_data[n].type       = C_FUNC;
 	str_data[n].val        = static_cast<int64>(PLUGIN_CMD_BASE) + cmd_idx;
-	str_data[n].func       = func;
+	str_data[n].func       = script_plugin_trampoline;
 	str_data[n].deprecated = false;
 	return true;
 }
