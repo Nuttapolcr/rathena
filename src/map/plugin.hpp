@@ -374,6 +374,23 @@ struct plugin_script_api_t {
 	void        (*pushint)(struct script_state* st, int64_t val);
 	void        (*pushstr)(struct script_state* st, const char* val);
 	struct map_session_data* (*rid2sd)(struct script_state* st);
+
+	// Suspend the running script. Call from inside a plugin script command,
+	// then return PLUGIN_SCRIPT_CMD_SUCCESS — the script is parked at the
+	// instruction after the command, with the player still attached to the
+	// NPC. Returns an opaque token to use with `resume()` later.
+	//
+	// To pass a value back to the calling script, push it via pushint/pushstr
+	// BEFORE returning from the script command (i.e. before resume()).
+	//
+	// The token is invalidated automatically if the script is freed
+	// (player logout, NPC reload, server shutdown). Calling resume() on
+	// such a token is a safe no-op.
+	void* (*suspend)(struct script_state* st);
+
+	// Resume a previously-suspended script. No-op if the token is null,
+	// has already been resumed, or refers to a freed script state.
+	void  (*resume)(void* token);
 };
 
 // ---- Player (PC) functions ----
@@ -630,5 +647,10 @@ int         plugin_hook_fire(int hook_type, void* data);
 const char* plugin_get_cmd_arg(int idx);
 bool        script_plugin_register(const char* name, const char* arg,
                                    plugin_script_func func, int cmd_idx);
+
+// Notify the plugin system that a script_state is about to be freed,
+// so any plugin-held suspend tokens for it become no-ops on resume().
+// Called from script_free_state() in script.cpp.
+void        plugin_script_state_freed(struct script_state* st);
 
 #endif // MAP_PLUGIN_HPP

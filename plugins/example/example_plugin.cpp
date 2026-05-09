@@ -14,9 +14,11 @@
  *   plugin_announce "Hello!";    // server-wide yellow broadcast
  *   plugin_count_mobs;           // count mobs on the attached player's map
  *   plugin_delayed_give 512, 5;  // give an Apple after 5 seconds
+ *   .@n = plugin_async_roll(3);  // suspends script ~1s then resumes with a roll [1..N]
  */
 
 #include <cstdio>
+#include <cstdlib>
 
 #include <map/plugin.hpp>
 
@@ -278,6 +280,60 @@ static int32_t plugin_delayed_give_tick(int32_t /*tid*/, int64_t /*tick*/,
 	return 0;
 }
 
+// Pending async-roll request: holds the suspend token and the upper bound.
+struct async_roll_t {
+	void*   token;
+	int32_t max;
+};
+
+// Timer callback that simulates an async result arriving after 1s.
+// Pushes the random roll onto the script stack, then resumes execution.
+static int32_t plugin_async_roll_tick(int32_t /*tid*/, int64_t /*tick*/,
+                                      int32_t /*id*/, intptr_t data)
+{
+	auto* req = reinterpret_cast<async_roll_t*>(data);
+	if (!req) return 0;
+
+	// Pretend we got a result from an external service.
+	int32_t result = 1 + (rand() % req->max);
+
+	// Push the value first — script.resume() re-enters run_script_main,
+	// which will then read this value as the command's return.
+	// The token is owned by the suspended script_state; resume() needs
+	// it to find the correct st pointer.
+	void* token = req->token;
+	delete req;
+
+	// Recover the script_state from the token to push onto its stack.
+	// suspend() returns the script_state* itself, so we can cast back.
+	g_api->script.pushint(static_cast<script_state*>(token), result);
+	g_api->script.resume(token);
+	return 0;
+}
+
+// .@n = plugin_async_roll(<max>);
+// Demonstrates script.suspend / script.resume: the script pauses at this
+// command and resumes ~1 second later with a random integer in [1..max].
+static int32_t buildin_plugin_async_roll(script_state* st)
+{
+	auto max = static_cast<int32_t>(g_api->script.getnum(st, 2));
+	if (max < 1) max = 1;
+
+	void* token = g_api->script.suspend(st);
+	if (!token) {
+		// Should never happen, but stay safe.
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+
+	auto* req = new async_roll_t{ token, max };
+	int64_t when = g_api->timer.gettick() + 1000; // 1s
+	g_api->timer.add_timer(when, plugin_async_roll_tick, 0,
+	                       reinterpret_cast<intptr_t>(req));
+
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
 // plugin_delayed_give <item_id>, <delay_seconds>;
 // Demonstrates timer.add_timer + clif.progressbar.
 static int32_t buildin_plugin_delayed_give(script_state* st)
@@ -328,8 +384,9 @@ PLUGIN_API bool plugin_init(plugin_api_t* api)
 	api->script_addcommand("plugin_announce",      "s",   buildin_plugin_announce);
 	api->script_addcommand("plugin_count_mobs",    "",    buildin_plugin_count_mobs);
 	api->script_addcommand("plugin_delayed_give",  "ii",  buildin_plugin_delayed_give);
+	api->script_addcommand("plugin_async_roll",    "i",   buildin_plugin_async_roll);
 
-	api->log.status("[example] Plugin loaded. New commands: plugin_announce, plugin_count_mobs, plugin_delayed_give");
+	api->log.status("[example] Plugin loaded. New commands: plugin_announce, plugin_count_mobs, plugin_delayed_give, plugin_async_roll");
 	return true;
 }
 

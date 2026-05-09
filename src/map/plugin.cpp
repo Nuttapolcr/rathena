@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
@@ -84,6 +85,11 @@ static std::vector<HookEntry>    hook_chains[HOOK_MAX];
 static std::vector<PluginCmd>    plugin_cmds;
 static std::vector<LoadedPlugin> loaded_plugins;
 
+// Tracks every script_state currently parked via api_script_suspend.
+// `script_free_state` calls plugin_script_state_freed() to drop entries
+// when the engine reclaims a state, so resume() on a stale token is safe.
+static std::unordered_set<script_state*> suspended_states;
+
 // ============================================================
 // Hook management API implementation
 // ============================================================
@@ -149,6 +155,34 @@ static void api_script_pushstr(script_state* st, const char* val)
 static map_session_data* api_script_rid2sd(script_state* st)
 {
 	return map_id2sd(st->rid);
+}
+
+static void* api_script_suspend(script_state* st)
+{
+	if (!st) return nullptr;
+
+	// Park the script at the instruction after the current command.
+	// run_script_main exits its RUN loop and falls into the
+	// "state != END && rid" branch, leaving the state attached to the
+	// player and waiting for someone to call run_script_main(st) again.
+	st->state = STOP;
+	suspended_states.insert(st);
+	return st;
+}
+
+static void api_script_resume(void* token)
+{
+	if (!token) return;
+	auto* st = static_cast<script_state*>(token);
+
+	// Validate: only resume states we actually parked. If the engine
+	// already freed `st` (player logout, NPC reload, etc.),
+	// plugin_script_state_freed will have removed it from the set.
+	auto it = suspended_states.find(st);
+	if (it == suspended_states.end()) return;
+	suspended_states.erase(it);
+
+	run_script_main(st);
 }
 
 // ============================================================
@@ -552,6 +586,8 @@ static plugin_api_t s_api = {
 		api_script_pushint,
 		api_script_pushstr,
 		api_script_rid2sd,
+		api_script_suspend,
+		api_script_resume,
 	},
 
 	// pc sub-struct
@@ -704,6 +740,15 @@ const char* plugin_get_cmd_arg(int idx)
 }
 
 // ============================================================
+// Public: notify that a script_state is being freed
+// ============================================================
+
+void plugin_script_state_freed(script_state* st)
+{
+	if (st) suspended_states.erase(st);
+}
+
+// ============================================================
 // Plugin loading
 // ============================================================
 
@@ -797,6 +842,7 @@ void plugin_manager_final(void)
 	}
 	loaded_plugins.clear();
 	plugin_cmds.clear();
+	suspended_states.clear();
 	for (int i = 0; i < HOOK_MAX; ++i)
 		hook_chains[i].clear();
 }

@@ -3704,6 +3704,9 @@ struct script_state* script_alloc_state(struct script_code* rootscript, int32 po
 void script_free_state(struct script_state* st)
 {
 	if (idb_exists(st_db, st->id)) {
+		// Notify the plugin system so any held suspend tokens become no-ops.
+		plugin_script_state_freed(st);
+
 		map_session_data *sd = st->rid ? map_id2sd(st->rid) : nullptr;
 
 		if (st->bk_st) // backup was not restored
