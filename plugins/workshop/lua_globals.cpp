@@ -263,6 +263,412 @@ static int lw_gettick(lua_State* L) {
     return 1;
 }
 
+// ---- inventory ----
+
+// delitem(player, slot, amount [, type, reason]) -> 1 on success
+//   slot is the inventory index (0..MAX_INVENTORY-1).
+//   type: 0=normal, 1=fail-allowed; reason: log reason code (LOG_TYPE_SCRIPT=7).
+static int lw_delitem(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t  n      = (int32_t)luaL_checkinteger(L, 2);
+    int32_t  amount = (int32_t)luaL_checkinteger(L, 3);
+    int32_t  type   = (int32_t)luaL_optinteger(L, 4, 0);
+    int16_t  reason = (int16_t)luaL_optinteger(L, 5, 0);
+    char rc = g_api->pc.delitem(sd, n, amount, type, reason, 7);
+    lua_pushinteger(L, rc == 0 ? 1 : 0);
+    return 1;
+}
+
+// item_exists(item_id) -> bool
+static int lw_item_exists(lua_State* L) {
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, g_api->item_api.db_exists(id) ? 1 : 0);
+    return 1;
+}
+
+// item_internal_name(item_id) -> "Apple" (the AEGIS / db key)
+static int lw_item_internal_name(lua_State* L) {
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    const char* n = g_api->item_api.db_get_name(id);
+    lua_pushstring(L, n ? n : "");
+    return 1;
+}
+
+// item_type(item_id) -> int (IT_HEALING=0, IT_USABLE=2, IT_ETC=3, ...)
+static int lw_item_type(lua_State* L) {
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, g_api->item_api.db_get_type(id));
+    return 1;
+}
+
+// ---- money ----
+
+// payzeny(player, amount) -> 1 on success
+static int lw_payzeny(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t z = (int32_t)luaL_checkinteger(L, 2);
+    char rc = g_api->pc.payzeny(sd, z, 7);  // LOG_TYPE_SCRIPT
+    lua_pushinteger(L, rc == 0 ? 1 : 0);
+    return 1;
+}
+
+// give_zeny(player, amount) -> 1 on success
+static int lw_give_zeny(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t z = (int32_t)luaL_checkinteger(L, 2);
+    char rc = g_api->pc.getzeny(sd, z, 7);
+    lua_pushinteger(L, rc == 0 ? 1 : 0);
+    return 1;
+}
+
+// ---- combat / skills ----
+
+// damage(src, target, hp [, sp, walkdelay, flag, skill_id]) -> remaining hp
+//   src may be nil/0 (no source). flag: 1=no death, 2=no aggro.
+static int lw_damage(lua_State* L) {
+    map_session_data* src_sd = lua_isnoneornil(L, 1) ? nullptr : sd_from_arg(L, 1);
+    map_session_data* tgt_sd = sd_from_arg(L, 2);
+    if (!tgt_sd) { lua_pushinteger(L, 0); return 1; }
+    int64_t  hp        = luaL_checkinteger(L, 3);
+    int64_t  sp        = luaL_optinteger(L, 4, 0);
+    int64_t  walkdelay = luaL_optinteger(L, 5, 0);
+    int32_t  flag      = (int32_t)luaL_optinteger(L, 6, 0);
+    uint16_t skill_id  = (uint16_t)luaL_optinteger(L, 7, 0);
+
+    block_list* src_bl = src_sd ? g_api->pc.as_bl(src_sd) : nullptr;
+    int32_t r = g_api->status.damage(src_bl, g_api->pc.as_bl(tgt_sd),
+                                      hp, sp, walkdelay, flag, skill_id);
+    lua_pushinteger(L, r);
+    return 1;
+}
+
+// use_skill(player, skill_id, level [, target_aid]) -> 1 on success
+//   target_aid defaults to the player itself.
+static int lw_use_skill(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    uint16_t id  = (uint16_t)luaL_checkinteger(L, 2);
+    uint16_t lvl = (uint16_t)luaL_checkinteger(L, 3);
+    int32_t  tgt = (int32_t)luaL_optinteger(L, 4, g_api->pc.get_aid(sd));
+    int32_t r = g_api->skill.use_id(sd, id, lvl, tgt);
+    lua_pushinteger(L, r);
+    return 1;
+}
+
+// get_skill_lv(player, skill_id) -> learned level
+static int lw_get_skill_lv(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    uint16_t id = (uint16_t)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, g_api->skill.get_lv(sd, id));
+    return 1;
+}
+
+// skill_id("MG_FIREBOLT") -> numeric id, 0 if unknown
+static int lw_skill_id(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    lua_pushinteger(L, g_api->skill.name2id(name));
+    return 1;
+}
+
+// skill_inf(skill_id) -> INF flags (1=ATTACK, 2=GROUND, 4=SELF, ...)
+static int lw_skill_inf(lua_State* L) {
+    uint16_t id = (uint16_t)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, g_api->skill.get_inf(id));
+    return 1;
+}
+
+// ---- map ----
+
+// mapindex("prontera") -> uint16
+static int lw_mapindex(lua_State* L) {
+    const char* m = luaL_checkstring(L, 1);
+    lua_pushinteger(L, g_api->map.name2id(m));
+    return 1;
+}
+
+// mapname(idx) -> "prontera"
+static int lw_mapname(lua_State* L) {
+    uint16_t idx = (uint16_t)luaL_checkinteger(L, 1);
+    const char* n = g_api->map.id2name(idx);
+    lua_pushstring(L, n ? n : "");
+    return 1;
+}
+
+// mapflag("prontera", flag_id) -> int
+static int lw_mapflag(lua_State* L) {
+    const char* m = luaL_checkstring(L, 1);
+    int32_t flag  = (int32_t)luaL_checkinteger(L, 2);
+    int16_t mid   = (int16_t)g_api->map.name2id(m);
+    lua_pushinteger(L, g_api->map.get_mapflag(mid, flag));
+    return 1;
+}
+
+// ---- map iteration (for_each_*) ----
+
+namespace iter {
+struct Ctx {
+    lua_State* L;
+    int        ref;
+    int32_t    matched;
+};
+
+static int32_t cb_player(block_list* bl, void* user) {
+    auto* c = static_cast<Ctx*>(user);
+    map_session_data* sd = g_api->bl.as_sd(bl);
+    if (!sd) return 0;
+    lua_rawgeti(c->L, LUA_REGISTRYINDEX, c->ref);
+    if (!lua_isfunction(c->L, -1)) { lua_pop(c->L, 1); return 0; }
+    push_player(c->L, sd);
+    if (lua_pcall(c->L, 1, 1, 0) != LUA_OK) {
+        wlog_warning("for_each error: %s", lua_tostring(c->L, -1));
+        lua_pop(c->L, 1);
+        return 0;
+    }
+    int matched = lua_toboolean(c->L, -1) ? 1 : 0;
+    lua_pop(c->L, 1);
+    if (matched) ++c->matched;
+    return matched;
+}
+
+static int32_t cb_count_only(block_list* /*bl*/, void* user) {
+    ++*static_cast<int32_t*>(user);
+    return 1;
+}
+} // namespace iter
+
+// for_each_player_in_map("mapname", function(player) -> bool|nil end) -> count
+//   The callback's truthy return marks the player as "matched" (counted in
+//   the return value); falsy return is fine too — used as filter / side
+//   effect. Mirrors the rAthena getmapusers / mapwarp patterns.
+static int lw_for_each_player_in_map(lua_State* L) {
+    const char* m = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    int16_t mid = (int16_t)g_api->map.name2id(m);
+
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    iter::Ctx ctx{L, ref, 0};
+    g_api->map.foreachinmap(iter::cb_player, &ctx, mid, 1 << PLUGIN_BL_PC);
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+
+    lua_pushinteger(L, ctx.matched);
+    return 1;
+}
+
+// for_each_player_in_area("map", x0, y0, x1, y1, fn) -> count
+static int lw_for_each_player_in_area(lua_State* L) {
+    const char* m = luaL_checkstring(L, 1);
+    int16_t x0 = (int16_t)luaL_checkinteger(L, 2);
+    int16_t y0 = (int16_t)luaL_checkinteger(L, 3);
+    int16_t x1 = (int16_t)luaL_checkinteger(L, 4);
+    int16_t y1 = (int16_t)luaL_checkinteger(L, 5);
+    luaL_checktype(L, 6, LUA_TFUNCTION);
+    int16_t mid = (int16_t)g_api->map.name2id(m);
+
+    lua_pushvalue(L, 6);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    iter::Ctx ctx{L, ref, 0};
+    g_api->map.foreachinarea(iter::cb_player, &ctx, mid, x0, y0, x1, y1,
+                              1 << PLUGIN_BL_PC);
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    lua_pushinteger(L, ctx.matched);
+    return 1;
+}
+
+// count_players_in_map("mapname") -> int (cheap variant of for_each)
+static int lw_count_players_in_map(lua_State* L) {
+    const char* m = luaL_checkstring(L, 1);
+    int16_t mid = (int16_t)g_api->map.name2id(m);
+    int32_t n = 0;
+    g_api->map.foreachinmap(iter::cb_count_only, &n, mid, 1 << PLUGIN_BL_PC);
+    lua_pushinteger(L, n);
+    return 1;
+}
+
+// count_mobs_in_map("mapname") -> int
+static int lw_count_mobs_in_map(lua_State* L) {
+    const char* m = luaL_checkstring(L, 1);
+    int16_t mid = (int16_t)g_api->map.name2id(m);
+    int32_t n = 0;
+    g_api->map.foreachinmap(iter::cb_count_only, &n, mid, 1 << PLUGIN_BL_MOB);
+    lua_pushinteger(L, n);
+    return 1;
+}
+
+// ---- storage ----
+
+// open_storage(player) -> 1 on success
+static int lw_open_storage(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, g_api->storage.open(sd) == 0 ? 1 : 0);
+    return 1;
+}
+
+// ---- quest ----
+
+// quest_add(player, quest_id) -> 1 on success
+static int lw_quest_add(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t qid = (int32_t)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, g_api->quest.add(sd, qid) == 0 ? 1 : 0);
+    return 1;
+}
+
+// quest_status(player, quest_id, status)
+//   status: 0=Q_INACTIVE, 1=Q_ACTIVE, 2=Q_COMPLETE
+static int lw_quest_status(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t qid = (int32_t)luaL_checkinteger(L, 2);
+    int     s   = (int)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, g_api->quest.update_status(sd, qid, s) == 0 ? 1 : 0);
+    return 1;
+}
+
+// quest_check(player, quest_id [, type]) -> int
+//   type: 0=HAVEQUEST, 1=PLAYTIME, 2=HUNTING
+static int lw_quest_check(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, -1); return 1; }
+    int32_t qid = (int32_t)luaL_checkinteger(L, 2);
+    int     t   = (int)luaL_optinteger(L, 3, 0);
+    lua_pushinteger(L, g_api->quest.check(sd, qid, t));
+    return 1;
+}
+
+// ---- npc events ----
+
+// trigger_event(player, "NpcName::OnLabel" [, ontouch]) -> 1 on dispatch
+static int lw_trigger_event(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    const char* ev   = luaL_checkstring(L, 2);
+    int         touch = (int)luaL_optinteger(L, 3, 0);
+    lua_pushinteger(L, g_api->npc.event(sd, ev, touch));
+    return 1;
+}
+
+// ---- clif effects / chat ----
+
+// progressbar(player, color_rgb, seconds)
+static int lw_progressbar(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    uint32_t color = (uint32_t)luaL_checkinteger(L, 2);
+    uint32_t secs  = (uint32_t)luaL_checkinteger(L, 3);
+    g_api->clif.progressbar(sd, color, secs);
+    return 0;
+}
+
+// progressbar_abort(player)
+static int lw_progressbar_abort(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    g_api->clif.progressbar_abort(sd);
+    return 0;
+}
+
+// messagecolor(player, color_rgb, message [, target])
+//   target: 0=ALL_CLIENT, 1=ALL_SAMEMAP, 2=AREA, 3=AREA_WOS, 24=SELF
+static int lw_messagecolor(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    uint32_t color = (uint32_t)luaL_checkinteger(L, 2);
+    const char* m  = luaL_checkstring(L, 3);
+    int32_t target = (int32_t)luaL_optinteger(L, 4, 24); // SELF
+    g_api->clif.messagecolor(g_api->pc.as_bl(sd), color, m, true, target);
+    return 0;
+}
+
+// specialeffect_single(player, effect_id) — sends only to that player
+static int lw_specialeffect_single(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int32_t eff = (int32_t)luaL_checkinteger(L, 2);
+    g_api->clif.specialeffect_single(g_api->pc.as_bl(sd), eff,
+                                      g_api->pc.get_fd(sd));
+    return 0;
+}
+
+// mapannounce("mapname", "text" [, color]) — broadcast to one map only
+//
+// clif.broadcast(bl, ..., ALL_SAMEMAP) sends to every player on bl's map,
+// so we just need ANY anchor on the map. We iterate until we find the
+// first player, broadcast through it, then stop visiting.
+struct MapAnnounceCtx { const char* msg; int color; bool sent; };
+static int32_t map_announce_cb(block_list* bl, void* user) {
+    auto* c = static_cast<MapAnnounceCtx*>(user);
+    if (c->sent) return 0;
+    g_api->clif.broadcast(bl, c->msg, c->color, 1); // 1 = ALL_SAMEMAP
+    c->sent = true;
+    return 1;
+}
+
+static int lw_mapannounce(lua_State* L) {
+    const char* m   = luaL_checkstring(L, 1);
+    const char* msg = luaL_checkstring(L, 2);
+    int color       = (int)luaL_optinteger(L, 3, 0);
+    int16_t mid     = (int16_t)g_api->map.name2id(m);
+
+    MapAnnounceCtx ctx{msg, color, false};
+    g_api->map.foreachinmap(map_announce_cb, &ctx, mid, 1 << PLUGIN_BL_PC);
+    lua_pushinteger(L, ctx.sent ? 1 : 0);
+    return 1;
+}
+
+// ---- time helpers ----
+
+// gettime(unit) — 1=sec 2=min 3=hour 4=wday(1..7) 5=mday 6=mon(1..12) 7=year 8=yday(1..366)
+static int lw_gettime(lua_State* L) {
+    int unit = (int)luaL_checkinteger(L, 1);
+    time_t t = time(nullptr);
+    struct tm lt = {};
+    localtime_r(&t, &lt);
+    int v = 0;
+    switch (unit) {
+        case 1: v = lt.tm_sec;          break;
+        case 2: v = lt.tm_min;          break;
+        case 3: v = lt.tm_hour;         break;
+        case 4: v = lt.tm_wday + 1;     break;
+        case 5: v = lt.tm_mday;         break;
+        case 6: v = lt.tm_mon + 1;      break;
+        case 7: v = lt.tm_year + 1900;  break;
+        case 8: v = lt.tm_yday + 1;     break;
+        default: v = 0;                 break;
+    }
+    lua_pushinteger(L, v);
+    return 1;
+}
+
+// gettimestr("%Y-%m-%d %H:%M:%S" [, length=64]) -> formatted string
+static int lw_gettimestr(lua_State* L) {
+    const char* fmt = luaL_checkstring(L, 1);
+    int len         = (int)luaL_optinteger(L, 2, 64);
+    if (len < 1)   len = 1;
+    if (len > 512) len = 512;
+    std::vector<char> buf(len + 1);
+    time_t t = time(nullptr);
+    struct tm lt = {};
+    localtime_r(&t, &lt);
+    strftime(buf.data(), buf.size(), fmt, &lt);
+    lua_pushstring(L, buf.data());
+    return 1;
+}
+
+// getservertime() -> unix timestamp (seconds since epoch)
+static int lw_getservertime(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)time(nullptr));
+    return 1;
+}
+
 // ---- timer support ----
 
 struct LuaTimer {
@@ -1057,6 +1463,46 @@ void register_globals(lua_State* L) {
         {"item_name",           lw_item_name},
         {"skill_name",          lw_skill_name},
         {"gettick",             lw_gettick},
+        // -- inventory --
+        {"delitem",             lw_delitem},
+        {"item_exists",         lw_item_exists},
+        {"item_internal_name",  lw_item_internal_name},
+        {"item_type",           lw_item_type},
+        // -- money --
+        {"payzeny",             lw_payzeny},
+        {"give_zeny",           lw_give_zeny},
+        // -- combat / skills --
+        {"damage",              lw_damage},
+        {"use_skill",           lw_use_skill},
+        {"get_skill_lv",        lw_get_skill_lv},
+        {"skill_id",            lw_skill_id},
+        {"skill_inf",           lw_skill_inf},
+        // -- map --
+        {"mapindex",            lw_mapindex},
+        {"mapname",             lw_mapname},
+        {"mapflag",             lw_mapflag},
+        {"for_each_player_in_map",  lw_for_each_player_in_map},
+        {"for_each_player_in_area", lw_for_each_player_in_area},
+        {"count_players_in_map",    lw_count_players_in_map},
+        {"count_mobs_in_map",       lw_count_mobs_in_map},
+        // -- storage --
+        {"open_storage",        lw_open_storage},
+        // -- quest --
+        {"quest_add",           lw_quest_add},
+        {"quest_status",        lw_quest_status},
+        {"quest_check",         lw_quest_check},
+        // -- npc events --
+        {"trigger_event",       lw_trigger_event},
+        // -- clif effects --
+        {"progressbar",         lw_progressbar},
+        {"progressbar_abort",   lw_progressbar_abort},
+        {"messagecolor",        lw_messagecolor},
+        {"specialeffect_single",lw_specialeffect_single},
+        {"mapannounce",         lw_mapannounce},
+        // -- time --
+        {"gettime",             lw_gettime},
+        {"gettimestr",          lw_gettimestr},
+        {"getservertime",       lw_getservertime},
         {"timer_after",         lw_timer_after},
         {"sleep",               lw_sleep},
         {"script_suspend",      lw_script_suspend},
