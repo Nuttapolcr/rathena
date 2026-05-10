@@ -298,6 +298,14 @@ Use inside a custom script command (`script_addcommand`).
 | `rid2sd(st)` | Get the attached player session, or `nullptr` |
 | `suspend(st)` | Park the script; return an opaque token. *See [Async script commands](#async-script-commands).* |
 | `resume(token)` | Continue a parked script. No-op on stale tokens. |
+| `set_var_num(st, sd, name, idx, value)` / `set_var_str(...)` | Write a script variable (`setd`/`setarray` equivalent) |
+| `get_var_num(st, sd, name, idx)` / `get_var_str(...)` | Read a script variable (`getd` equivalent) |
+
+The variable name's prefix selects scope: `.` (NPC), `.@` (local),
+`#`/`##` (char/account-shared), `$`/`$@` (global perm/temp), `'`
+(instance), `@` (temp char). `index` is the array element (0 for
+non-array). See [`script_constants.hpp`](../src/map/script_constants.hpp)
+for the prefix conventions.
 
 ### `pc` — Player operations
 
@@ -312,6 +320,13 @@ Use inside a custom script command (`script_addcommand`).
 | `get_fd / get_aid / get_name` | Session lookup |
 | `get_blv / get_jlv / get_mapid / get_pos_x / get_pos_y` | Stats lookup |
 | `as_bl(sd)` | Cast to `block_list*` |
+| `bonus / bonus2 / bonus3 / bonus4 / bonus5` | Apply stat modifiers (`SP_*` types) |
+| `countitem(sd, nameid)` | Sum every stack of an item in inventory |
+| `read_param(sd, type)` | Read a player parameter (Str=13, Agi=14, MaxHp=6, …) |
+| `get_equip_nameid(sd, equip_index)` | nameid currently in `EQI_*` slot, or 0 |
+| `get_npc_id(sd)` | NPC bl id of the dialog the player is in |
+| `get_npc_menu(sd)` | Player's last `scriptmenu` selection (1-based) |
+| `get_npc_amount(sd)` / `get_npc_str(sd)` | Last `scriptinput` integer / string |
 
 ### `mob` — Monsters
 
@@ -412,6 +427,23 @@ Pre-built sends for common client-facing effects.
 
 `color` values are `0xRRGGBB`. `target` matches `enum send_target`:
 `ALL_CLIENT=0`, `AREA=2`, `SELF=24`, …
+
+**NPC dialog primitives** — combine with `script.suspend()` to build
+mes / next / menu / input flows from a plugin script command:
+
+| Function | Purpose |
+|---|---|
+| `scriptmes(sd, oid, msg)` | Append a line to the dialog box |
+| `scriptnext(sd, oid)` | Show the *Next* button |
+| `scriptclose(sd, oid)` | Show the *Close* button |
+| `scriptmenu(sd, oid, "A:B:C")` | Show a menu (selection lands in `pc.get_npc_menu`) |
+| `scriptinput(sd, oid)` / `scriptinputstr(sd, oid)` | Numeric / string input box |
+
+`oid` is normally `pc.get_npc_id(sd)` — the NPC the player is talking
+to. After sending the prompt, call `script.suspend(st)` and return.
+The engine's own `npc_scriptcont` will resume the script when the
+client responds; the next script command can read the result with
+`pc.get_npc_menu / get_npc_amount / get_npc_str`.
 
 ### `timer` — Timers
 
@@ -584,6 +616,9 @@ demonstrates every category. Highlights:
 | `plugin_delayed_give id, secs` | `timer` + `clif.progressbar` |
 | `plugin_async_roll(max)` | `script.suspend` / `script.resume` |
 | `plugin_send_ping` | Outbound custom packet |
+| `plugin_inventory_report` | `pc.countitem` + `pc.read_param` + `script.set_var_num/get_var_num` |
+| `plugin_buff_str10` | `pc.bonus` |
+| `plugin_dialog_demo` + `plugin_get_npc_menu` | `clif.scriptmes/scriptmenu` + `script.suspend` + `pc.get_npc_menu` |
 
 It also installs a handler for inbound packet `0x0CFE` to echo a reply
 on `0x0CFF`.
