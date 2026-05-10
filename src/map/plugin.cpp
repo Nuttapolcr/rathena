@@ -61,6 +61,10 @@ using namespace rathena;
 struct script_data* push_val2(struct script_stack* stack, enum c_op type, int64 val, struct reg_db* ref);
 struct script_data* push_str(struct script_stack* stack, enum c_op type, char* str);
 
+// get_val2_num / get_val2_str also live in script.cpp without a header.
+int64       get_val2_num(struct script_state* st, int64 uid, struct reg_db* ref);
+const char* get_val2_str(struct script_state* st, int64 uid, struct reg_db* ref);
+
 // packetdb_addpacket is defined in clif.cpp without a header declaration.
 void packetdb_addpacket(uint16 cmd, uint16 length,
                         void (*func)(int32, map_session_data*), ...);
@@ -214,6 +218,40 @@ static void api_script_resume(void* token)
 	run_script_main(st);
 }
 
+// ---- Variable storage wrappers ----
+// Translate (varname, index) into the engine's uid form and forward to
+// the existing setd_sub_* / get_val2_* helpers.
+
+static void api_script_set_var_num(script_state* st, map_session_data* sd,
+                                   const char* varname, int32_t index, int64_t value)
+{
+	if (!varname) return;
+	setd_sub_num(st, sd, varname, index, static_cast<int64>(value), nullptr);
+}
+
+static void api_script_set_var_str(script_state* st, map_session_data* sd,
+                                   const char* varname, int32_t index, const char* value)
+{
+	if (!varname) return;
+	setd_sub_str(st, sd, varname, index, value ? value : "", nullptr);
+}
+
+static int64_t api_script_get_var_num(script_state* st, map_session_data* /*sd*/,
+                                      const char* varname, int32_t index)
+{
+	if (!st || !varname) return 0;
+	int64 uid = reference_uid(add_str(varname), index);
+	return static_cast<int64_t>(get_val2_num(st, uid, nullptr));
+}
+
+static const char* api_script_get_var_str(script_state* st, map_session_data* /*sd*/,
+                                          const char* varname, int32_t index)
+{
+	if (!st || !varname) return "";
+	int64 uid = reference_uid(add_str(varname), index);
+	return get_val2_str(st, uid, nullptr);
+}
+
 // ============================================================
 // PC API wrappers
 // ============================================================
@@ -275,6 +313,63 @@ static int16_t     api_pc_get_mapid(map_session_data* sd) { return sd ? sd->m : 
 static int16_t     api_pc_get_pos_x(map_session_data* sd) { return sd ? sd->x : 0; }
 static int16_t     api_pc_get_pos_y(map_session_data* sd) { return sd ? sd->y : 0; }
 static block_list* api_pc_as_bl    (map_session_data* sd) { return static_cast<block_list*>(sd); }
+
+// ---- Stat bonus wrappers ----
+static void api_pc_bonus(map_session_data* sd, int32_t type, int32_t val)
+{
+	if (sd) pc_bonus(sd, type, val);
+}
+static void api_pc_bonus2(map_session_data* sd, int32_t type, int32_t v1, int32_t v2)
+{
+	if (sd) pc_bonus2(sd, type, v1, v2);
+}
+static void api_pc_bonus3(map_session_data* sd, int32_t type,
+                          int32_t v1, int32_t v2, int32_t v3)
+{
+	if (sd) pc_bonus3(sd, type, v1, v2, v3);
+}
+static void api_pc_bonus4(map_session_data* sd, int32_t type,
+                          int32_t v1, int32_t v2, int32_t v3, int32_t v4)
+{
+	if (sd) pc_bonus4(sd, type, v1, v2, v3, v4);
+}
+static void api_pc_bonus5(map_session_data* sd, int32_t type,
+                          int32_t v1, int32_t v2, int32_t v3, int32_t v4, int32_t v5)
+{
+	if (sd) pc_bonus5(sd, type, v1, v2, v3, v4, v5);
+}
+
+// ---- Inventory / equip / param accessors ----
+static int32_t api_pc_countitem(map_session_data* sd, uint32_t nameid)
+{
+	if (!sd || !nameid) return 0;
+	int32_t count = 0;
+	for (int i = 0; i < MAX_INVENTORY; ++i) {
+		const item& it = sd->inventory.u.items_inventory[i];
+		if (it.nameid == static_cast<t_itemid>(nameid))
+			count += it.amount;
+	}
+	return count;
+}
+
+static int64_t api_pc_read_param(map_session_data* sd, int32_t type)
+{
+	return sd ? static_cast<int64_t>(pc_readparam(sd, type)) : 0;
+}
+
+static uint32_t api_pc_get_equip_nameid(map_session_data* sd, int32_t equip_index)
+{
+	if (!sd || !equip_index_check(equip_index)) return 0;
+	int16 inv_idx = pc_checkequip(sd, equip_bitmask[equip_index]);
+	if (inv_idx < 0 || inv_idx >= MAX_INVENTORY) return 0;
+	return static_cast<uint32_t>(sd->inventory.u.items_inventory[inv_idx].nameid);
+}
+
+// ---- NPC dialog response accessors ----
+static int32_t     api_pc_get_npc_id    (map_session_data* sd) { return sd ? sd->npc_id     : 0; }
+static int32_t     api_pc_get_npc_menu  (map_session_data* sd) { return sd ? sd->npc_menu   : 0; }
+static int32_t     api_pc_get_npc_amount(map_session_data* sd) { return sd ? sd->npc_amount : 0; }
+static const char* api_pc_get_npc_str   (map_session_data* sd) { return sd ? sd->npc_str    : ""; }
 
 // ============================================================
 // Mob API wrappers
@@ -554,6 +649,32 @@ static void api_clif_messagecolor(block_list* bl, uint32_t color, const char* ms
 	                         static_cast<send_target>(target), nullptr);
 }
 
+// ---- NPC script dialog wrappers ----
+static void api_clif_scriptmes(map_session_data* sd, uint32_t oid, const char* msg)
+{
+	if (sd && msg) clif_scriptmes(*sd, oid, msg);
+}
+static void api_clif_scriptnext(map_session_data* sd, uint32_t oid)
+{
+	if (sd) clif_scriptnext(*sd, oid);
+}
+static void api_clif_scriptclose(map_session_data* sd, uint32_t oid)
+{
+	if (sd) clif_scriptclose(*sd, oid);
+}
+static void api_clif_scriptmenu(map_session_data* sd, uint32_t oid, const char* menu)
+{
+	if (sd && menu) clif_scriptmenu(*sd, oid, menu);
+}
+static void api_clif_scriptinput(map_session_data* sd, uint32_t oid)
+{
+	if (sd) clif_scriptinput(*sd, oid);
+}
+static void api_clif_scriptinputstr(map_session_data* sd, uint32_t oid)
+{
+	if (sd) clif_scriptinputstr(*sd, oid);
+}
+
 // ============================================================
 // Timer wrappers
 // ============================================================
@@ -676,6 +797,10 @@ static plugin_api_t s_api = {
 		api_script_rid2sd,
 		api_script_suspend,
 		api_script_resume,
+		api_script_set_var_num,
+		api_script_set_var_str,
+		api_script_get_var_num,
+		api_script_get_var_str,
 	},
 
 	// pc sub-struct
@@ -696,6 +821,18 @@ static plugin_api_t s_api = {
 		api_pc_get_pos_x,
 		api_pc_get_pos_y,
 		api_pc_as_bl,
+		api_pc_bonus,
+		api_pc_bonus2,
+		api_pc_bonus3,
+		api_pc_bonus4,
+		api_pc_bonus5,
+		api_pc_countitem,
+		api_pc_read_param,
+		api_pc_get_equip_nameid,
+		api_pc_get_npc_id,
+		api_pc_get_npc_menu,
+		api_pc_get_npc_amount,
+		api_pc_get_npc_str,
 	},
 
 	// mob sub-struct
@@ -781,6 +918,12 @@ static plugin_api_t s_api = {
 		api_clif_progressbar_abort,
 		api_clif_broadcast,
 		api_clif_messagecolor,
+		api_clif_scriptmes,
+		api_clif_scriptnext,
+		api_clif_scriptclose,
+		api_clif_scriptmenu,
+		api_clif_scriptinput,
+		api_clif_scriptinputstr,
 	},
 
 	// timer sub-struct

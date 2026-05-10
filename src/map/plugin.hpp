@@ -404,6 +404,32 @@ struct plugin_script_api_t {
 	// Resume a previously-suspended script. No-op if the token is null,
 	// has already been resumed, or refers to a freed script state.
 	void  (*resume)(void* token);
+
+	// ---- Variable storage (setd / getd / setarray equivalents) ----
+	//
+	// Read or write a player/server script variable directly from C.
+	// `varname` includes the prefix that selects the scope:
+	//
+	//     .       NPC scope          (lifetime: NPC instance)
+	//     .@      scope/local        (lifetime: this stack frame)
+	//     #       char-shared        (per-account, char-server stored)
+	//     ##      account-wide       (per-account, login-server stored)
+	//     @       temporary char     (player-bound, cleared on logout)
+	//     $       global permanent
+	//     $@      global temporary
+	//     '       instance-scoped
+	//
+	// `index` is the array index (use 0 for non-array vars).
+	// `sd` is the player whose vars are touched; it may be null only
+	// for global ($) variables.
+	void        (*set_var_num)(struct script_state* st, struct map_session_data* sd,
+	                          const char* varname, int32_t index, int64_t value);
+	void        (*set_var_str)(struct script_state* st, struct map_session_data* sd,
+	                          const char* varname, int32_t index, const char* value);
+	int64_t     (*get_var_num)(struct script_state* st, struct map_session_data* sd,
+	                          const char* varname, int32_t index);
+	const char* (*get_var_str)(struct script_state* st, struct map_session_data* sd,
+	                          const char* varname, int32_t index);
 };
 
 // ---- Player (PC) functions ----
@@ -443,6 +469,40 @@ struct plugin_pc_api_t {
 	int16_t            (*get_pos_x) (struct map_session_data* sd);
 	int16_t            (*get_pos_y) (struct map_session_data* sd);
 	struct block_list* (*as_bl)     (struct map_session_data* sd);
+
+	// ---- Stat bonuses (status_bonus_*) ----
+	// Apply a bonus modifier to a player. `type` is one of the SP_*
+	// values defined in script_constants.hpp (SP_MAXHP=6, SP_STR=13, ...).
+	// These mirror pc_bonus / pc_bonus2 / pc_bonus3 / pc_bonus4 / pc_bonus5.
+	void (*bonus) (struct map_session_data* sd, int32_t type, int32_t val);
+	void (*bonus2)(struct map_session_data* sd, int32_t type,
+	               int32_t val1, int32_t val2);
+	void (*bonus3)(struct map_session_data* sd, int32_t type,
+	               int32_t val1, int32_t val2, int32_t val3);
+	void (*bonus4)(struct map_session_data* sd, int32_t type,
+	               int32_t val1, int32_t val2, int32_t val3, int32_t val4);
+	void (*bonus5)(struct map_session_data* sd, int32_t type,
+	               int32_t val1, int32_t val2, int32_t val3, int32_t val4,
+	               int32_t val5);
+
+	// ---- Inventory / equip / parameter accessors ----
+
+	// Sum every stack of `nameid` in the player's main inventory.
+	int32_t (*countitem)(struct map_session_data* sd, uint32_t nameid);
+
+	// Read a player parameter (Str=13, Agi=14, Vit=15, Int=16, Dex=17,
+	// Luk=18, MaxHp=6, MaxSp=8, ...). See script_constants.hpp for SP_*.
+	int64_t (*read_param)(struct map_session_data* sd, int32_t type);
+
+	// nameid of the item currently equipped in `equip_index`
+	// (EQI_HEAD_TOP=0 through EQI_MAX-1). Returns 0 if no item.
+	uint32_t (*get_equip_nameid)(struct map_session_data* sd, int32_t equip_index);
+
+	// ---- NPC dialog response (read after scriptmenu/scriptinput) ----
+	int32_t     (*get_npc_id)    (struct map_session_data* sd);  // current NPC bl id
+	int32_t     (*get_npc_menu)  (struct map_session_data* sd);  // last selection (1-based)
+	int32_t     (*get_npc_amount)(struct map_session_data* sd);  // integer input
+	const char* (*get_npc_str)   (struct map_session_data* sd);  // string input
 };
 
 // ---- Monster (mob) functions ----
@@ -581,6 +641,21 @@ struct plugin_clif_api_t {
 	// Colored chat message (color: 0xRRGGBB).
 	void (*messagecolor)(struct block_list* bl, uint32_t color, const char* msg,
 	                     bool rgb2bgr, int32_t target);
+
+	// ---- NPC script dialog ----
+	// Build mes/next/menu/input flows from a plugin script command.
+	// `oid` is the dialog-owning NPC bl id, normally `st->oid`.
+	//
+	// After scriptmenu / scriptinput / scriptinputstr the player's
+	// response lands on the session — read it via the matching
+	// pc.get_npc_menu / pc.get_npc_amount / pc.get_npc_str accessors
+	// once the script resumes.
+	void (*scriptmes)     (struct map_session_data* sd, uint32_t oid, const char* msg);
+	void (*scriptnext)    (struct map_session_data* sd, uint32_t oid);
+	void (*scriptclose)   (struct map_session_data* sd, uint32_t oid);
+	void (*scriptmenu)    (struct map_session_data* sd, uint32_t oid, const char* menu);
+	void (*scriptinput)   (struct map_session_data* sd, uint32_t oid);
+	void (*scriptinputstr)(struct map_session_data* sd, uint32_t oid);
 };
 
 // ---- Timer ----

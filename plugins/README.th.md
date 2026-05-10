@@ -297,6 +297,13 @@ static int on_login(void* data, void* user_data) {
 | `rid2sd(st)` | คืน session ของผู้เล่นที่ผูกอยู่ หรือ `nullptr` |
 | `suspend(st)` | หยุด script ไว้, คืน opaque token (ดู [Async script command](#async-script-command)) |
 | `resume(token)` | รัน script ที่หยุดไว้ต่อ; no-op ถ้า token ไม่ valid แล้ว |
+| `set_var_num(st, sd, name, idx, value)` / `set_var_str(...)` | เขียนตัวแปร script (เทียบเท่า `setd`/`setarray`) |
+| `get_var_num(st, sd, name, idx)` / `get_var_str(...)` | อ่านตัวแปร script (เทียบเท่า `getd`) |
+
+prefix ของชื่อตัวแปรกำหนด scope: `.` (NPC), `.@` (local),
+`#`/`##` (char/account-shared), `$`/`$@` (global ถาวร/ชั่วคราว),
+`'` (instance), `@` (temp char) ส่วน `index` คือ index ของ array
+(0 ถ้าไม่ใช่ array)
 
 ### `pc` — การจัดการผู้เล่น
 
@@ -311,6 +318,13 @@ static int on_login(void* data, void* user_data) {
 | `get_fd / get_aid / get_name` | ข้อมูล session |
 | `get_blv / get_jlv / get_mapid / get_pos_x / get_pos_y` | ข้อมูล stat |
 | `as_bl(sd)` | cast เป็น `block_list*` |
+| `bonus / bonus2 / bonus3 / bonus4 / bonus5` | ใส่ stat modifier (ใช้ค่า `SP_*`) |
+| `countitem(sd, nameid)` | นับจำนวน item รวมทุก stack ใน inventory |
+| `read_param(sd, type)` | อ่านค่า parameter (Str=13, Agi=14, MaxHp=6, …) |
+| `get_equip_nameid(sd, equip_index)` | nameid ของของใน slot `EQI_*` หรือ 0 |
+| `get_npc_id(sd)` | NPC bl id ที่ผู้เล่นกำลังคุยด้วย |
+| `get_npc_menu(sd)` | ตัวเลือก `scriptmenu` ล่าสุด (1-based) |
+| `get_npc_amount(sd)` / `get_npc_str(sd)` | ค่าจาก `scriptinput` ล่าสุด (integer / string) |
 
 ### `mob` — มอนสเตอร์
 
@@ -411,6 +425,23 @@ api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello, /*user_data=*/
 
 ค่า `color` เป็น `0xRRGGBB` ส่วน `target` ตรงกับ `enum send_target`:
 `ALL_CLIENT=0`, `AREA=2`, `SELF=24`, …
+
+**NPC dialog primitives** — ใช้ร่วมกับ `script.suspend()` เพื่อสร้าง
+flow แบบ mes / next / menu / input จาก plugin script command:
+
+| Function | หน้าที่ |
+|---|---|
+| `scriptmes(sd, oid, msg)` | เพิ่มบรรทัดในกล่องสนทนา |
+| `scriptnext(sd, oid)` | แสดงปุ่ม *Next* |
+| `scriptclose(sd, oid)` | แสดงปุ่ม *Close* |
+| `scriptmenu(sd, oid, "A:B:C")` | แสดงเมนู (ผลลัพธ์อ่านผ่าน `pc.get_npc_menu`) |
+| `scriptinput(sd, oid)` / `scriptinputstr(sd, oid)` | ช่อง input ตัวเลข / ข้อความ |
+
+`oid` ปกติคือ `pc.get_npc_id(sd)` — NPC ที่ผู้เล่นกำลังคุยด้วย
+หลังส่ง prompt ให้เรียก `script.suspend(st)` แล้ว return ออกมา;
+`npc_scriptcont` ของ engine จะ resume script ให้เองเมื่อ client
+ตอบกลับ จากนั้น script command ถัดไปอ่านผลผ่าน
+`pc.get_npc_menu / get_npc_amount / get_npc_str`
 
 ### `timer` — Timer
 
@@ -582,6 +613,9 @@ api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet, /*user_data=
 | `plugin_delayed_give id, secs` | `timer` + `clif.progressbar` |
 | `plugin_async_roll(max)` | `script.suspend` / `script.resume` |
 | `plugin_send_ping` | packet ขาออกแบบกำหนดเอง |
+| `plugin_inventory_report` | `pc.countitem` + `pc.read_param` + `script.set_var_num/get_var_num` |
+| `plugin_buff_str10` | `pc.bonus` |
+| `plugin_dialog_demo` + `plugin_get_npc_menu` | `clif.scriptmes/scriptmenu` + `script.suspend` + `pc.get_npc_menu` |
 
 นอกจากนี้ยังลงทะเบียน handler สำหรับ packet `0x0CFE` ขาเข้าและส่ง
 reply กลับใน `0x0CFF`

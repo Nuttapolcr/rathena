@@ -16,6 +16,9 @@
  *   plugin_delayed_give 512, 5;  // give an Apple after 5 seconds
  *   .@n = plugin_async_roll(3);  // suspends script ~1s then resumes with a roll [1..N]
  *   plugin_send_ping;            // pushes a custom 0x0CFE packet to the player
+ *   plugin_inventory_report;     // setd/getd + countitem + readparam demo
+ *   plugin_buff_str10;           // pc.bonus demo (Str+10 for 60s via sc_start)
+ *   plugin_dialog_demo;          // suspend + clif scriptmes/scriptmenu demo
  */
 
 #include <cstdio>
@@ -392,6 +395,95 @@ static int32_t buildin_plugin_send_ping(script_state* st, void* /*user_data*/)
 	return PLUGIN_SCRIPT_CMD_SUCCESS;
 }
 
+// plugin_inventory_report;
+// Demonstrates pc.countitem + pc.read_param + script.set_var_num/get_var_num.
+//   - Reads how many Apples the player has via pc.countitem
+//   - Reads STR via pc.read_param (SP_STR=13)
+//   - Stamps the result into a global temp variable $@plugin_last_str
+//     and reads it back to confirm the round trip
+static int32_t buildin_plugin_inventory_report(script_state* st, void* /*user_data*/)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+
+	int32_t apples = g_api->pc.countitem(sd, /*Apple=*/512);
+	int64_t str    = g_api->pc.read_param(sd, /*SP_STR=*/13);
+
+	g_api->script.set_var_num(st, sd, "$@plugin_last_str", 0, str);
+	int64_t roundtrip = g_api->script.get_var_num(st, sd, "$@plugin_last_str", 0);
+
+	char buf[160];
+	snprintf(buf, sizeof(buf), "%s: apples=%d str=%lld (roundtrip=%lld)",
+	         g_api->pc.get_name(sd), apples,
+	         (long long)str, (long long)roundtrip);
+	g_api->pc.message(g_api->pc.get_fd(sd), buf);
+
+	g_api->script.pushint(st, apples);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
+// plugin_buff_str10;
+// Demonstrates pc.bonus2 — wires a Str+10 modifier directly into the
+// player. Note: bonuses applied this way do not persist across status
+// recalculation; for permanent buffs use sc_start. This is just an API
+// sanity check.
+static int32_t buildin_plugin_buff_str10(script_state* st, void* /*user_data*/)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+	// SP_STR = 13; pc.bonus signature: (sd, type, val).
+	g_api->pc.bonus(sd, /*SP_STR=*/13, 10);
+	g_api->pc.message(g_api->pc.get_fd(sd), "Str +10 applied (until next status recalc).");
+
+	g_api->script.pushint(st, 1);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
+// plugin_dialog_demo;
+// Drives a mes -> menu flow using clif.script* + script.suspend.
+// When the player selects an option, npc_scriptcont resumes the script
+// from the engine side; the next script command can then read the
+// choice via plugin_get_npc_menu (below).
+static int32_t buildin_plugin_dialog_demo(script_state* st, void* /*user_data*/)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+
+	// The dialog-owning NPC id. After NPC click the engine has set
+	// sd->npc_id to the bl id of the clicked NPC, which is exactly
+	// what the clif_script* helpers expect.
+	int32_t oid = g_api->pc.get_npc_id(sd);
+
+	g_api->clif.scriptmes (sd, oid, "Plugin dialog demo:");
+	g_api->clif.scriptmes (sd, oid, "Pick a colour.");
+	g_api->clif.scriptmenu(sd, oid, "Red:Green:Blue");
+
+	// state=STOP via suspend(); when the player picks, the engine's
+	// own clif_parse_NpcSelectMenu -> npc_scriptcont() path will call
+	// run_script_main() and the script naturally exits STOP.
+	(void)g_api->script.suspend(st);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
+// .@n = plugin_get_npc_menu();
+// Pairs with plugin_dialog_demo: read sd->npc_menu (1-based index of
+// the entry the player picked) so the calling script can branch on it.
+static int32_t buildin_plugin_get_npc_menu(script_state* st, void* /*user_data*/)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	g_api->script.pushint(st, sd ? g_api->pc.get_npc_menu(sd) : 0);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
 // plugin_delayed_give <item_id>, <delay_seconds>;
 // Demonstrates timer.add_timer + clif.progressbar.
 static int32_t buildin_plugin_delayed_give(script_state* st, void* /*user_data*/)
@@ -449,6 +541,10 @@ PLUGIN_API bool plugin_init(plugin_api_t* api)
 	api->script_addcommand("plugin_delayed_give",  "ii",  buildin_plugin_delayed_give, nullptr);
 	api->script_addcommand("plugin_async_roll",    "i",   buildin_plugin_async_roll,   nullptr);
 	api->script_addcommand("plugin_send_ping",     "",    buildin_plugin_send_ping,    nullptr);
+	api->script_addcommand("plugin_inventory_report", "", buildin_plugin_inventory_report, nullptr);
+	api->script_addcommand("plugin_buff_str10",    "",    buildin_plugin_buff_str10,   nullptr);
+	api->script_addcommand("plugin_dialog_demo",   "",    buildin_plugin_dialog_demo,  nullptr);
+	api->script_addcommand("plugin_get_npc_menu",  "",    buildin_plugin_get_npc_menu, nullptr);
 
 	// Install a fixed-length 6-byte handler for our custom inbound packet.
 	// Cleared automatically by plugin_manager_final on shutdown / reload.
