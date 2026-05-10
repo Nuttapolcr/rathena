@@ -10,6 +10,7 @@
  */
 
 #include "workshop.hpp"
+#include "db_store.hpp"
 #include "lua_bridge.hpp"
 #include "modloader.hpp"
 
@@ -81,6 +82,7 @@ WLOG_DEFINE(wlog_error,   error)
 
 static int32_t buildin_workshop_reload(script_state* st, void* /*user_data*/) {
     workshop::stop_event_system();
+    workshop::DbStore::instance().clear();
     workshop::LuaBridge::instance().shutdown();
     workshop::LuaBridge::instance().init();
     workshop::register_globals(workshop::LuaBridge::instance().L());
@@ -143,6 +145,7 @@ PLUGIN_API bool plugin_init(plugin_api_t* api) {
 
 PLUGIN_API void plugin_final() {
     workshop::stop_event_system();
+    workshop::DbStore::instance().clear();
     workshop::LuaBridge::instance().shutdown();
     wlog_status("plugin unloaded");
 }

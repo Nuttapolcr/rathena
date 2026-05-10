@@ -1,4 +1,5 @@
 #include "modloader.hpp"
+#include "db_store.hpp"
 #include "lua_bridge.hpp"
 #include "workshop.hpp"
 
@@ -92,6 +93,42 @@ static bool parse_modinfo(const std::string& mod_dir, ModInfo& mi) {
     mi.load_order   = body["load_order"] ? body["load_order"].as<int>() : 100;
     mi.on_init      = body["on_init"]    ? body["on_init"].as<std::string>() : "";
     mi.enabled      = body["enabled"]    ? body["enabled"].as<bool>()      : true;
+
+    // db: optional list of DB YAML files to register before scripts run.
+    // Accepts shorthand and detailed forms:
+    //   db:
+    //     - db/items.yml                # path only; key=Id, override=replace
+    //     - path: db/mobs.yml           # detailed
+    //       key:      Id
+    //       override: merge
+    if (auto db = body["db"]) {
+        if (db.IsSequence()) {
+            for (auto e : db) {
+                DbFile f;
+                if (e.IsScalar()) {
+                    f.path = e.as<std::string>();
+                } else if (e.IsMap()) {
+                    if (!e["path"]) {
+                        wlog_warning("%s: db entry missing 'path'",
+                                     yml.c_str());
+                        continue;
+                    }
+                    f.path          = e["path"].as<std::string>();
+                    f.key_field     = e["key"]
+                        ? e["key"].as<std::string>() : "";
+                    f.override_mode = e["override"]
+                        ? e["override"].as<std::string>() : "";
+                } else {
+                    wlog_warning("%s: db entry is neither string nor map",
+                                 yml.c_str());
+                    continue;
+                }
+                mi.db_files.push_back(std::move(f));
+            }
+        } else {
+            wlog_warning("%s: db section must be a sequence", yml.c_str());
+        }
+    }
 
     if (mi.scripts.empty()) {
         wlog_warning("%s: 'scripts' list is empty — mod will load nothing",
@@ -187,6 +224,25 @@ bool ModLoader::load_all() {
     for (const auto& m : ordered_) {
         wlog_status("loading mod '%s' v%s", m.name.c_str(), m.version.c_str());
         bool mod_ok = true;
+
+        // DB files load FIRST so that mod scripts can call db_get/db_each
+        // at top level. Within a mod the listed order matters; across
+        // mods, dependencies run before dependents (resolve_order took
+        // care of that).
+        for (const auto& f : m.db_files) {
+            std::string path = m.dir + "/" + f.path;
+            if (!file_exists(path)) {
+                wlog_warning("  db file not found: %s", path.c_str());
+                mod_ok = false;
+                continue;
+            }
+            if (!DbStore::instance().load_file(
+                    path, m.name, f.key_field,
+                    parse_override_mode(f.override_mode))) {
+                mod_ok = false;
+            }
+        }
+
         for (const auto& s : m.scripts) {
             std::string path = m.dir + "/" + s;
             if (!file_exists(path)) {
@@ -229,13 +285,15 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
     if (mkdir(ex.c_str(), 0755) != 0) return false;
     std::string scripts = ex + "/scripts";
     mkdir(scripts.c_str(), 0755);
+    std::string db_dir = ex + "/db";
+    mkdir(db_dir.c_str(), 0755);
 
     std::string modinfo =
         "# modinfo.yml — describes a workshop mod.\n"
         "#\n"
         "# Required:  name, scripts\n"
         "# Optional:  enabled (default true), version, author, description,\n"
-        "#            dependencies, load_order, on_init\n"
+        "#            dependencies, load_order, on_init, db\n"
         "\n"
         "name: example\n"
         "# Disabled by default — flip to true (or remove this line) to load it.\n"
@@ -246,10 +304,48 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "load_order: 100\n"
         "scripts:\n"
         "  - scripts/hello.lua\n"
+        "# db: rAthena-style YAML files. Each entry can be a bare path\n"
+        "# (key=Id, override=replace) or a map with explicit options.\n"
+        "#\n"
+        "# Override modes when an Id collides with an earlier mod:\n"
+        "#   replace  — newer wins (default; matches db/import/ behaviour)\n"
+        "#   skip     — first-seen wins\n"
+        "#   error    — log + skip\n"
+        "#   merge    — deep-merge YAML maps key by key\n"
+        "db:\n"
+        "  - db/sample_items.yml\n"
+        "#  - path: db/sample_mobs.yml\n"
+        "#    key:      Id\n"
+        "#    override: merge\n"
         "on_init: example_on_init\n"
         "# dependencies:\n"
         "#   - other_mod_name\n";
     write_text(ex + "/modinfo.yml", modinfo);
+
+    // Sample DB file — same Header/Body shape rAthena uses, so users can
+    // copy real item entries from db/<region>/item_db.yml without editing.
+    std::string sample_items =
+        "# example/db/sample_items.yml — sample workshop DB.\n"
+        "# Header.Type is the bucket name passed to db_get/db_each in Lua.\n"
+        "# Override behaviour is set per-file in modinfo.yml's db: section.\n"
+        "Header:\n"
+        "  Type: ITEM_DB\n"
+        "  Version: 1\n"
+        "Body:\n"
+        "  - Id: 90001\n"
+        "    AegisName: Workshop_Token\n"
+        "    Name: Workshop Token\n"
+        "    Type: Etc\n"
+        "    Buy: 0\n"
+        "    Weight: 0\n"
+        "  - Id: 90002\n"
+        "    AegisName: Workshop_Apple\n"
+        "    Name: Workshop Apple\n"
+        "    Type: Healing\n"
+        "    Buy: 1\n"
+        "    Weight: 1\n"
+        "    Heal: 25\n";
+    write_text(db_dir + "/sample_items.yml", sample_items);
 
     std::string hello =
         "-- example/scripts/hello.lua\n"
@@ -376,6 +472,26 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "        mes(player, 'Quite young at ' .. age .. '!')\n"
         "    else\n"
         "        mes(player, 'Welcome, ' .. age .. '-year-old.')\n"
+        "    end\n"
+        "    close_dialog(player)\n"
+        "end)\n"
+        "\n"
+        "-- ----------------------------------------------------------------\n"
+        "-- Workshop DB demo (db/sample_items.yml is registered in modinfo)\n"
+        "-- ----------------------------------------------------------------\n"
+        "-- Top-level code can already query the DB because the loader runs\n"
+        "-- db files BEFORE scripts within the same mod load order.\n"
+        "log_status('ITEM_DB count = ' .. db_count('ITEM_DB'))\n"
+        "for _, t in ipairs(db_types()) do log_status('db type: ' .. t) end\n"
+        "\n"
+        "-- NPC usage:  workshop_show_token;  // prints the entry\n"
+        "register_buildin('workshop_show_token', '', function(player)\n"
+        "    local entry = db_get('ITEM_DB', 90001)\n"
+        "    if not entry then\n"
+        "        mes(player, 'sample_items.yml not loaded')\n"
+        "    else\n"
+        "        mes(player, entry.AegisName .. ' / ' .. entry.Name)\n"
+        "        mes(player, 'Type=' .. entry.Type .. ' Weight=' .. entry.Weight)\n"
         "    end\n"
         "    close_dialog(player)\n"
         "end)\n";

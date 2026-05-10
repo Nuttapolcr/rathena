@@ -55,9 +55,81 @@ Plugin auto-detect bytecode (`luac`-compiled `.luac`) จาก byte แรก
 | `dependencies` | list[string] |          | `[]`    | mod ที่ต้องโหลดก่อนตัวนี้                                   |
 | `load_order`   | int          |          | `100`   | ตัวเลขน้อย = โหลดก่อน                                       |
 | `on_init`      | string       |          | ""      | ชื่อ Lua function ที่จะถูกเรียกหลังโหลด scripts ครบทุกไฟล์ |
+| `db`           | list         |          | `[]`    | rAthena-style YAML DB files — โหลดก่อน scripts (ดู [DB store](#db-store)) |
 
 ลำดับโหลดถูกแก้ด้วย topological sort: dependencies → ใครชนเสมอกัน
 ตัดสินด้วย load_order → แล้วค่อยตัดสินด้วยชื่อ mod
+
+## DB store
+
+แต่ละ mod สามารถ ship ไฟล์ YAML รูปแบบเดียวกับ rAthena (`Header.Type` +
+`Body` sequence) ใน folder ของตัวเอง Workshop รวมไฟล์เหล่านี้เป็น store
+กลางที่ Lua mods อ่านได้ผ่าน `db_get` / `db_each` / `db_count` / `db_has` /
+`db_types`
+
+**modinfo.yml — db section:**
+
+```yaml
+db:
+  - db/items.yml                      # bare path: key=Id, override=replace
+  - path: db/balance_overrides.yml    # detailed form
+    key:      Id                      # primary-key field (default "Id")
+    override: merge                   # collision policy
+```
+
+**Override modes** (เลือกเมื่อ Id ของ entry ชนกับ mod ก่อนหน้า):
+
+| mode      | พฤติกรรม                                                    |
+|-----------|-------------------------------------------------------------|
+| `replace` | newer wins (default; เหมือน `db/import/` ของ rAthena)         |
+| `skip`    | first-seen wins; ที่มาทีหลังโดน drop                          |
+| `error`   | log error + skip — ใช้ตอน debug ว่า mod ไหนชนกัน               |
+| `merge`   | deep-merge YAML maps key by key (later mod tweaks fields)   |
+
+**YAML file shape** (เหมือน rAthena DB):
+
+```yaml
+Header:
+  Type: ITEM_DB
+  Version: 1
+Body:
+  - Id: 90001
+    AegisName: Workshop_Token
+    Name: Workshop Token
+    Type: Etc
+    ...
+```
+
+`Header.Type` คือชื่อ bucket (เช่น `ITEM_DB`, `MOB_DB`, `SKILL_DB`) ที่ Lua
+ใช้อ้างอิง — Workshop ไม่ตีความ Type เป็นอย่างอื่น เก็บ entry ตามโครงสร้าง
+YAML ตรง ๆ
+
+**ลำดับการโหลด:** ทุก mod ในลำดับ topological+load_order — สำหรับ mod
+แต่ละตัว DB files โหลด **ก่อน** scripts จึงสามารถเรียก `db_get` / `db_each`
+ใน top-level Lua code ได้
+
+**Lua API:**
+
+```lua
+db_count('ITEM_DB')                   -- → int
+db_has  ('ITEM_DB', 90001)            -- → bool
+db_get  ('ITEM_DB', 90001)            -- → table or nil
+db_types()                            -- → list of bucket names
+
+db_each('ITEM_DB', function(id, entry)
+    -- entry คือ Lua table ที่ recursively converted จาก YAML
+    print(id, entry.AegisName, entry.Type)
+end)
+```
+
+YAML scalar → Lua: int → number → bool (เฉพาะ `true`/`false`/`yes`/`no`
+literals) → string fallback. Sequences กลายเป็น 1-indexed table; maps
+กลายเป็น keyed table
+
+**ข้อจำกัด:** ระบบนี้เป็น store แยกของ workshop เอง ไม่ได้ inject เข้า
+DB ของ engine — engine ยังโหลด `db/<region>/item_db.yml` ปกติ Workshop DB
+เหมาะกับ mod logic (lookups, balancing tables, custom config) ที่ Lua
+script ต้องการอ่าน ไม่ได้แทน item_db จริง
 
 ## Lua API reference
 

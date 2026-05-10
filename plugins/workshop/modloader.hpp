@@ -6,6 +6,15 @@
 
 namespace workshop {
 
+// One DB-source declaration from a mod's modinfo.yml. Each file is a
+// rAthena-style YAML (`Header.Type` + `Body` sequence); the workshop
+// indexes its entries into a shared store.
+struct DbFile {
+    std::string path;            // relative path inside the mod folder
+    std::string key_field;       // "" → defaults to "Id"
+    std::string override_mode;   // "" → defaults to "replace"
+};
+
 struct ModInfo {
     std::string dir;            // absolute path to the mod folder
     std::string name;
@@ -14,6 +23,7 @@ struct ModInfo {
     std::string description;
     std::vector<std::string> scripts;       // relative paths inside the mod dir
     std::vector<std::string> dependencies;  // names of mods that must load first
+    std::vector<DbFile>      db_files;      // YAML DB files to register before scripts
     int load_order = 100;                   // lower runs first; default 100
     std::string on_init;                    // optional Lua function name to call after load
     bool enabled = true;                    // false = mod is read but not loaded

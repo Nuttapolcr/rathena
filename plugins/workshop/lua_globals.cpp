@@ -9,7 +9,10 @@
  */
 
 #include "lua_bridge.hpp"
+#include "db_store.hpp"
 #include "workshop.hpp"
+
+#include <yaml-cpp/yaml.h>
 
 extern "C" {
 #include "lua.h"
@@ -1724,6 +1727,133 @@ static int lw_hook(lua_State* L) {
     return 1;
 }
 
+// ---- DB store access ----
+
+// Recursive YAML → Lua converter. Scalars try int → number → bool → string
+// in that order so item ids stay numeric, prices stay numeric, but
+// AegisName lands as a Lua string. Sequences come back as 1-indexed
+// arrays; maps as keyed tables.
+static void push_yaml_node(lua_State* L, const YAML::Node& n) {
+    if (!n) {
+        lua_pushnil(L);
+        return;
+    }
+    if (n.IsNull()) {
+        lua_pushnil(L);
+        return;
+    }
+    if (n.IsScalar()) {
+        try {
+            int64_t i = n.as<int64_t>();
+            lua_pushinteger(L, i);
+            return;
+        } catch (...) {}
+        try {
+            double d = n.as<double>();
+            lua_pushnumber(L, d);
+            return;
+        } catch (...) {}
+        // Booleans only via the literal forms yaml-cpp recognises.
+        try {
+            bool b = n.as<bool>();
+            const std::string& raw = n.Scalar();
+            if (raw == "true" || raw == "True"  || raw == "TRUE"  ||
+                raw == "false"|| raw == "False" || raw == "FALSE" ||
+                raw == "yes"  || raw == "Yes"   || raw == "no"    ||
+                raw == "No") {
+                lua_pushboolean(L, b ? 1 : 0);
+                return;
+            }
+        } catch (...) {}
+        const std::string& s = n.Scalar();
+        lua_pushlstring(L, s.data(), s.size());
+        return;
+    }
+    if (n.IsSequence()) {
+        lua_newtable(L);
+        int i = 1;
+        for (auto child : n) {
+            push_yaml_node(L, child);
+            lua_rawseti(L, -2, i++);
+        }
+        return;
+    }
+    if (n.IsMap()) {
+        lua_newtable(L);
+        for (auto kv : n) {
+            std::string k = kv.first.as<std::string>();
+            push_yaml_node(L, kv.second);
+            lua_setfield(L, -2, k.c_str());
+        }
+        return;
+    }
+    lua_pushnil(L);
+}
+
+// db_get(type, id) -> table or nil
+static int lw_db_get(lua_State* L) {
+    const char* type = luaL_checkstring(L, 1);
+    int64_t id       = luaL_checkinteger(L, 2);
+    YAML::Node n = workshop::DbStore::instance().get(type, id);
+    if (!n) {
+        lua_pushnil(L);
+        return 1;
+    }
+    push_yaml_node(L, n);
+    return 1;
+}
+
+// db_has(type, id) -> bool
+static int lw_db_has(lua_State* L) {
+    const char* type = luaL_checkstring(L, 1);
+    int64_t id       = luaL_checkinteger(L, 2);
+    lua_pushboolean(L, workshop::DbStore::instance().has(type, id) ? 1 : 0);
+    return 1;
+}
+
+// db_count(type) -> int
+static int lw_db_count(lua_State* L) {
+    const char* type = luaL_checkstring(L, 1);
+    lua_pushinteger(L, (lua_Integer)workshop::DbStore::instance().count(type));
+    return 1;
+}
+
+// db_each(type, function(id, entry) ... end)
+static int lw_db_each(lua_State* L) {
+    const char* type = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    workshop::DbStore::instance().each(type,
+        [L, ref](int64_t id, const YAML::Node& entry) {
+            lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+            if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return; }
+            lua_pushinteger(L, id);
+            push_yaml_node(L, entry);
+            if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
+                wlog_warning("db_each error: %s", lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+        });
+
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    return 0;
+}
+
+// db_types() -> array of every Type seen in any loaded YAML file
+static int lw_db_types(lua_State* L) {
+    auto v = workshop::DbStore::instance().types();
+    lua_newtable(L);
+    int i = 1;
+    for (auto& s : v) {
+        lua_pushstring(L, s.c_str());
+        lua_rawseti(L, -2, i++);
+    }
+    return 1;
+}
+
 } // anonymous namespace
 
 namespace workshop {
@@ -1814,6 +1944,12 @@ void register_globals(lua_State* L) {
         {"npc_menu",            lw_npc_menu},
         {"npc_amount",          lw_npc_amount},
         {"npc_str",             lw_npc_str},
+        // -- workshop DB store --
+        {"db_get",              lw_db_get},
+        {"db_has",              lw_db_has},
+        {"db_count",            lw_db_count},
+        {"db_each",             lw_db_each},
+        {"db_types",            lw_db_types},
         {"timer_after",         lw_timer_after},
         {"sleep",               lw_sleep},
         {"script_suspend",      lw_script_suspend},
