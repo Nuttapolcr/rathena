@@ -56,6 +56,8 @@ Plugin auto-detect bytecode (`luac`-compiled `.luac`) จาก byte แรก
 | `load_order`   | int          |          | `100`   | ตัวเลขน้อย = โหลดก่อน                                       |
 | `on_init`      | string       |          | ""      | ชื่อ Lua function ที่จะถูกเรียกหลังโหลด scripts ครบทุกไฟล์ |
 | `db`           | list         |          | `[]`    | rAthena-style YAML DB files — โหลดก่อน scripts (ดู [DB store](#db-store)) |
+| `rathena_scripts` | list[string] |       | `[]`    | classic `.txt` NPC scripts — queue ให้ engine (ดู [rAthena scripts](#rathena-scripts)) |
+| `disable_scripts` | list[string] |       | `[]`    | path ที่จะลบออกจาก `scripts_main.conf` queue                |
 
 ลำดับโหลดถูกแก้ด้วย topological sort: dependencies → ใครชนเสมอกัน
 ตัดสินด้วย load_order → แล้วค่อยตัดสินด้วยชื่อ mod
@@ -130,6 +132,46 @@ literals) → string fallback. Sequences กลายเป็น 1-indexed tabl
 DB ของ engine — engine ยังโหลด `db/<region>/item_db.yml` ปกติ Workshop DB
 เหมาะกับ mod logic (lookups, balancing tables, custom config) ที่ Lua
 script ต้องการอ่าน ไม่ได้แทน item_db จริง
+
+## rAthena scripts
+
+แต่ละ mod ship ไฟล์ `.txt` script ของ rAthena ใน folder ตัวเอง แล้ว
+declare ใน modinfo.yml — workshop จะ queue ให้ engine ผ่าน
+`npc_addsrcfile` ตอน `plugin_init` (ก่อน `do_init_npc` ที่ parse script ทั้งหมด)
+เป็นช่วงเวลาเดียวกับที่ `scripts_main.conf` ถูกประมวลผลพอดี
+
+**modinfo.yml — rathena_scripts:**
+
+```yaml
+rathena_scripts:
+  - npc/myshop.txt          # path สัมพัทธ์จาก folder ของ mod
+  - npc/quests/dailies.txt
+```
+
+ไฟล์ที่ list ไว้จะถูกอ่านโดย engine เหมือน NPC ทั่วไป — ใช้งาน buildin
+script command ที่ Lua mod ลงทะเบียนได้ตรง ๆ (เช่น `shop_intro`,
+`workshop_async_roll`)
+
+**ปิด script จาก `scripts_main.conf`** ผ่าน `disable_scripts`:
+
+```yaml
+disable_scripts:
+  - npc/airports/airships.txt   # path ตามที่เขียนใน scripts_main.conf
+  - npc/cities/prontera.txt
+```
+
+Workshop จะเรียก `npc_delsrcfile` ดึงรายการเหล่านี้ออกจาก queue ก่อนที่
+engine จะ parse — จึงไม่ถูกโหลดในรอบนี้ (ครั้งหน้าที่ map-server boot
+ก็จะถูก disable อีก เพราะ workshop รันใหม่ทุกรอบ)
+
+**Timing:** queue ถูก populate ตอน `map_config_read` (อ่าน
+`scripts_main.conf`) — ก่อน plugin_init runs — ก่อน `do_init_npc` parse
+ของจริง การ add/del ของเราจึง take effect 100% ก่อน script จะถูก
+compile ครั้งเดียวในรอบ boot นั้น
+
+**ข้อจำกัด:** ใช้ได้เฉพาะตอน boot — `workshop_reload` ใน runtime ไม่
+re-trigger NPC parsing (ต้องใช้ `@reloadnpcfile` หรือ restart map-server
+เพื่อให้รายการ rathena_scripts ใหม่/ถูกลบมีผล)
 
 ## Lua API reference
 

@@ -21,12 +21,16 @@ struct ModInfo {
     std::string version;
     std::string author;
     std::string description;
-    std::vector<std::string> scripts;       // relative paths inside the mod dir
-    std::vector<std::string> dependencies;  // names of mods that must load first
-    std::vector<DbFile>      db_files;      // YAML DB files to register before scripts
-    int load_order = 100;                   // lower runs first; default 100
-    std::string on_init;                    // optional Lua function name to call after load
-    bool enabled = true;                    // false = mod is read but not loaded
+    std::vector<std::string> scripts;          // Lua scripts (relative to mod dir)
+    std::vector<std::string> dependencies;     // mods that must load first
+    std::vector<DbFile>      db_files;         // YAML DB files (relative to mod dir)
+    std::vector<std::string> rathena_scripts;  // .txt scripts queued via npc_addsrcfile
+                                                // (paths relative to mod dir)
+    std::vector<std::string> disable_scripts;  // paths to remove from scripts_main.conf
+                                                // queue (verbatim "npc:" entries)
+    int load_order = 100;                      // lower runs first; default 100
+    std::string on_init;                       // Lua function called after load
+    bool enabled = true;                       // false = read but not loaded
 };
 
 class ModLoader {

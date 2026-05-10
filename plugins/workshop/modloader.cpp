@@ -88,11 +88,13 @@ static bool parse_modinfo(const std::string& mod_dir, ModInfo& mi) {
     mi.version     = body["version"]     ? body["version"].as<std::string>()     : "0.0.0";
     mi.author      = body["author"]      ? body["author"].as<std::string>()      : "";
     mi.description = body["description"] ? body["description"].as<std::string>() : "";
-    mi.scripts      = read_string_seq(body["scripts"]);
-    mi.dependencies = read_string_seq(body["dependencies"]);
-    mi.load_order   = body["load_order"] ? body["load_order"].as<int>() : 100;
-    mi.on_init      = body["on_init"]    ? body["on_init"].as<std::string>() : "";
-    mi.enabled      = body["enabled"]    ? body["enabled"].as<bool>()      : true;
+    mi.scripts          = read_string_seq(body["scripts"]);
+    mi.dependencies     = read_string_seq(body["dependencies"]);
+    mi.rathena_scripts  = read_string_seq(body["rathena_scripts"]);
+    mi.disable_scripts  = read_string_seq(body["disable_scripts"]);
+    mi.load_order       = body["load_order"] ? body["load_order"].as<int>() : 100;
+    mi.on_init          = body["on_init"]    ? body["on_init"].as<std::string>() : "";
+    mi.enabled          = body["enabled"]    ? body["enabled"].as<bool>()      : true;
 
     // db: optional list of DB YAML files to register before scripts run.
     // Accepts shorthand and detailed forms:
@@ -243,6 +245,38 @@ bool ModLoader::load_all() {
             }
         }
 
+        // disable_scripts removes entries that scripts_main.conf already
+        // queued via map_config_read. Must run before do_init_npc parses
+        // the queue — i.e. while plugin_init is still on the stack.
+        for (const auto& s : m.disable_scripts) {
+            if (g_api->npc.del_script_file(s.c_str())) {
+                wlog_status("  disabled script: %s", s.c_str());
+            } else {
+                wlog_warning("  disable_scripts: '%s' was not in the queue",
+                             s.c_str());
+            }
+        }
+
+        // rathena_scripts adds .txt files to the engine's source list.
+        // The path stored in the queue is the same one the engine reads
+        // when it calls npc_parsesrcfile, so it must be relative to the
+        // map-server's cwd (the rAthena root).
+        for (const auto& s : m.rathena_scripts) {
+            std::string path = m.dir + "/" + s;
+            if (!file_exists(path)) {
+                wlog_warning("  rathena_script not found: %s", path.c_str());
+                mod_ok = false;
+                continue;
+            }
+            if (g_api->npc.add_script_file(path.c_str())) {
+                wlog_status("  queued rathena script: %s", path.c_str());
+            } else {
+                wlog_warning("  could not queue rathena script: %s",
+                             path.c_str());
+                mod_ok = false;
+            }
+        }
+
         for (const auto& s : m.scripts) {
             std::string path = m.dir + "/" + s;
             if (!file_exists(path)) {
@@ -293,7 +327,8 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "#\n"
         "# Required:  name, scripts\n"
         "# Optional:  enabled (default true), version, author, description,\n"
-        "#            dependencies, load_order, on_init, db\n"
+        "#            dependencies, load_order, on_init, db,\n"
+        "#            rathena_scripts, disable_scripts\n"
         "\n"
         "name: example\n"
         "# Disabled by default — flip to true (or remove this line) to load it.\n"
@@ -317,10 +352,35 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "#  - path: db/sample_mobs.yml\n"
         "#    key:      Id\n"
         "#    override: merge\n"
+        "# rathena_scripts: classic .txt NPC files queued for the engine.\n"
+        "# Paths are relative to this mod's folder and are picked up by\n"
+        "# do_init_npc just like entries from scripts_main.conf.\n"
+        "rathena_scripts:\n"
+        "  - npc/example_npc.txt\n"
+        "# disable_scripts: paths to drop from the engine's queue. Use the\n"
+        "# exact string scripts_main.conf wrote (relative to rAthena root).\n"
+        "# disable_scripts:\n"
+        "#   - npc/airports/airships.txt\n"
         "on_init: example_on_init\n"
         "# dependencies:\n"
         "#   - other_mod_name\n";
     write_text(ex + "/modinfo.yml", modinfo);
+
+    std::string npc_dir = ex + "/npc";
+    mkdir(npc_dir.c_str(), 0755);
+    std::string example_npc =
+        "// example/npc/example_npc.txt — classic rAthena NPC script,\n"
+        "// queued for the engine via modinfo.yml's rathena_scripts.\n"
+        "//\n"
+        "// Click the NPC at prontera (150,150) to try the workshop\n"
+        "// dialog buildins (shop_intro / shop_handle).\n"
+        "\n"
+        "prontera,150,150,5\tscript\tWorkshop Demo\t100,{\n"
+        "\tshop_intro;\n"
+        "\tshop_handle;\n"
+        "\tend;\n"
+        "}\n";
+    write_text(npc_dir + "/example_npc.txt", example_npc);
 
     // Sample DB file — same Header/Body shape rAthena uses, so users can
     // copy real item entries from db/<region>/item_db.yml without editing.
