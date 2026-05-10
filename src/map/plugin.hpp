@@ -594,6 +594,21 @@ struct plugin_quest_api_t {
 struct plugin_npc_api_t {
 	// event_name format: "NpcExname::OnEventLabel"
 	int (*event)(struct map_session_data* sd, const char* event_name, int ontouch);
+
+	// Append a .txt script file to the engine's source-file list. The file
+	// is parsed during do_init_npc, so this only does anything useful if
+	// called from plugin_init() (before NPC compilation runs). `path` is
+	// resolved relative to the map-server's working directory — typically
+	// the rAthena root. Returns false if the file cannot be opened or if
+	// it is already queued.
+	bool (*add_script_file)(const char* path);
+
+	// Remove a .txt path from the engine's source-file list. Use this to
+	// suppress entries that scripts_main.conf added but a mod wants to
+	// replace or disable. Has to be called from plugin_init() to take
+	// effect — once do_init_npc has run, scripts are already parsed.
+	// Returns true if the path was present before the call.
+	bool (*del_script_file)(const char* path);
 };
 
 // ---- Skill utilities ----

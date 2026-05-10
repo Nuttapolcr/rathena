@@ -1654,6 +1654,7 @@ int32 npc_get_new_npc_id(void);
 int32 npc_addsrcfile(const char* name, bool loadscript);
 void npc_delsrcfile(const char* name);
 int32 npc_parsesrcfile(const char* filepath);
+extern std::vector<std::string> npc_src_files;
 void do_clear_npc(void);
 void do_final_npc(void);
 void do_init_npc(void);
