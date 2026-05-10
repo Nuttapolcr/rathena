@@ -56,6 +56,20 @@ struct HookCallback {
 };
 static std::vector<HookCallback> g_hook_callbacks;
 
+// Coroutine state for the currently-running register_buildin handler.
+// Defined here (rather than next to drive_coro further down) so that
+// var-storage and dialog wrappers can reach `g_active_coro` directly.
+struct BuildinCoro {
+    script_state* st             = nullptr;
+    lua_State*    T              = nullptr;
+    int           thread_ref     = LUA_NOREF; // keeps T alive against GC
+    void*         token          = nullptr;   // null until first suspend
+    bool          engine_resumed = false;     // dialog flow: engine drives resumption
+    std::string   name;
+};
+
+static thread_local BuildinCoro* g_active_coro = nullptr;
+
 // ---- helpers ----
 
 static lua_State* L_get() { return workshop::LuaBridge::instance().L(); }
@@ -669,6 +683,275 @@ static int lw_getservertime(lua_State* L) {
     return 1;
 }
 
+// ---- pc accessors / inventory queries ----
+
+// countitem(player, item_id) -> total stacks summed
+static int lw_countitem(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, g_api->pc.countitem(sd, id));
+    return 1;
+}
+
+// read_param(player, sp_type) -> int (Str=13, Agi=14, ...; SP_* constants)
+static int lw_read_param(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t type = (int32_t)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, (lua_Integer)g_api->pc.read_param(sd, type));
+    return 1;
+}
+
+// get_equip_id(player, eqi_slot) -> nameid (0 if empty)
+static int lw_get_equip_id(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t slot = (int32_t)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, g_api->pc.get_equip_nameid(sd, slot));
+    return 1;
+}
+
+// ---- stat bonuses ----
+
+// bonus(player, sp_type, val)
+static int lw_bonus(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int32_t type = (int32_t)luaL_checkinteger(L, 2);
+    int32_t val  = (int32_t)luaL_checkinteger(L, 3);
+    g_api->pc.bonus(sd, type, val);
+    return 0;
+}
+
+// bonus2(player, type, v1, v2)
+static int lw_bonus2(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int32_t type = (int32_t)luaL_checkinteger(L, 2);
+    int32_t v1   = (int32_t)luaL_checkinteger(L, 3);
+    int32_t v2   = (int32_t)luaL_checkinteger(L, 4);
+    g_api->pc.bonus2(sd, type, v1, v2);
+    return 0;
+}
+
+// bonus3(player, type, v1, v2, v3)
+static int lw_bonus3(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int32_t type = (int32_t)luaL_checkinteger(L, 2);
+    int32_t v1   = (int32_t)luaL_checkinteger(L, 3);
+    int32_t v2   = (int32_t)luaL_checkinteger(L, 4);
+    int32_t v3   = (int32_t)luaL_checkinteger(L, 5);
+    g_api->pc.bonus3(sd, type, v1, v2, v3);
+    return 0;
+}
+
+// bonus4(player, type, v1, v2, v3, v4)
+static int lw_bonus4(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int32_t type = (int32_t)luaL_checkinteger(L, 2);
+    int32_t v1   = (int32_t)luaL_checkinteger(L, 3);
+    int32_t v2   = (int32_t)luaL_checkinteger(L, 4);
+    int32_t v3   = (int32_t)luaL_checkinteger(L, 5);
+    int32_t v4   = (int32_t)luaL_checkinteger(L, 6);
+    g_api->pc.bonus4(sd, type, v1, v2, v3, v4);
+    return 0;
+}
+
+// bonus5(player, type, v1, v2, v3, v4, v5)
+static int lw_bonus5(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int32_t type = (int32_t)luaL_checkinteger(L, 2);
+    int32_t v1   = (int32_t)luaL_checkinteger(L, 3);
+    int32_t v2   = (int32_t)luaL_checkinteger(L, 4);
+    int32_t v3   = (int32_t)luaL_checkinteger(L, 5);
+    int32_t v4   = (int32_t)luaL_checkinteger(L, 6);
+    int32_t v5   = (int32_t)luaL_checkinteger(L, 7);
+    g_api->pc.bonus5(sd, type, v1, v2, v3, v4, v5);
+    return 0;
+}
+
+// ---- variable storage (setd / getd / array) ----
+//
+// Variable scope is determined by the prefix of the name:
+//   .       NPC-scope             .@      local stack frame
+//   #       char-shared           ##      account-wide
+//   @       temporary char        $       global permanent
+//   $@      global temporary      '       instance-scoped
+//
+// String variables use a trailing '$' (`$@name$` is a string).
+// The `index` argument is the array index; pass 0 for non-array vars.
+//
+// All var ops require a script_state, so they must be called from inside
+// a register_buildin handler (where we have an active coroutine).
+
+static int lw_set_var(lua_State* L) {
+    if (!g_active_coro) {
+        return luaL_error(L,
+            "set_var must be called from a register_buildin handler");
+    }
+    map_session_data* sd =
+        lua_isnoneornil(L, 1) ? nullptr : sd_from_arg(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    int32_t index    = (int32_t)luaL_optinteger(L, 4, 0);
+
+    if (lua_isinteger(L, 3) || lua_isnumber(L, 3)) {
+        g_api->script.set_var_num(g_active_coro->st, sd, name, index,
+                                  lua_tointeger(L, 3));
+    } else {
+        const char* v = luaL_checkstring(L, 3);
+        g_api->script.set_var_str(g_active_coro->st, sd, name, index, v);
+    }
+    return 0;
+}
+
+static int lw_get_var(lua_State* L) {
+    if (!g_active_coro) {
+        return luaL_error(L,
+            "get_var must be called from a register_buildin handler");
+    }
+    map_session_data* sd =
+        lua_isnoneornil(L, 1) ? nullptr : sd_from_arg(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    int32_t index    = (int32_t)luaL_optinteger(L, 3, 0);
+
+    // The trailing-$ convention selects the storage slot:
+    //   `$@flag`  -> integer
+    //   `$@name$` -> string
+    size_t len = strlen(name);
+    bool is_str = (len > 0 && name[len - 1] == '$');
+    if (is_str) {
+        const char* v =
+            g_api->script.get_var_str(g_active_coro->st, sd, name, index);
+        lua_pushstring(L, v ? v : "");
+    } else {
+        lua_pushinteger(L,
+            (lua_Integer)g_api->script.get_var_num(
+                g_active_coro->st, sd, name, index));
+    }
+    return 1;
+}
+
+// ---- NPC dialog (mes / next / menu / input / close) ----
+//
+// `mes(player, "...")` just sends a chat-window line and does not block;
+// queue several mes lines, then call one of the blocking primitives:
+//
+//   next_dialog(player)        wait for the player to click "Next"
+//   close_dialog(player)       wait for the player to click "Close"
+//   menu(player, "a:b:c")      wait for menu selection (read npc_menu(player))
+//   input_int(player)          wait for integer input  (read npc_amount(player))
+//   input_str(player)          wait for string input   (read npc_str(player))
+//
+// The blocking primitives suspend the calling NPC script and yield the
+// Lua coroutine. The engine resumes the script_state when the player
+// responds — the *next* NPC script command runs (typically another Lua
+// register_buildin command that reads the response and continues the
+// dialog). The Lua function the dialog primitive returns from does NOT
+// resume; any Lua code after it is unreachable by design.
+
+static int32_t resolve_dialog_oid(map_session_data* sd) {
+    return g_api->pc.get_npc_id(sd);
+}
+
+// mes(player, "text") — non-blocking line
+static int lw_mes(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    const char* msg = luaL_checkstring(L, 2);
+    g_api->clif.scriptmes(sd, resolve_dialog_oid(sd), msg);
+    return 0;
+}
+
+// Internal: park the calling script and yield the coroutine so the engine
+// owns resumption. `g_active_coro` must be valid (i.e. we're inside a
+// register_buildin handler).
+static int dialog_park_and_yield(lua_State* L, const char* fnname) {
+    if (!g_active_coro) {
+        return luaL_error(L,
+            "%s must be called from a register_buildin handler", fnname);
+    }
+    g_api->script.suspend(g_active_coro->st);
+    g_active_coro->engine_resumed = true;
+    return lua_yield(L, 0);
+}
+
+// next_dialog(player) — sends "Next" prompt; engine resumes script after click
+static int lw_next_dialog(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    g_api->clif.scriptnext(sd, resolve_dialog_oid(sd));
+    return dialog_park_and_yield(L, "next_dialog");
+}
+
+// close_dialog(player) — sends "Close" button
+static int lw_close_dialog(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    g_api->clif.scriptclose(sd, resolve_dialog_oid(sd));
+    return dialog_park_and_yield(L, "close_dialog");
+}
+
+// menu(player, "Buy:Sell:Cancel")
+static int lw_menu(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    const char* options = luaL_checkstring(L, 2);
+    g_api->clif.scriptmenu(sd, resolve_dialog_oid(sd), options);
+    return dialog_park_and_yield(L, "menu");
+}
+
+// input_int(player)
+static int lw_input_int(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    g_api->clif.scriptinput(sd, resolve_dialog_oid(sd));
+    return dialog_park_and_yield(L, "input_int");
+}
+
+// input_str(player)
+static int lw_input_str(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    g_api->clif.scriptinputstr(sd, resolve_dialog_oid(sd));
+    return dialog_park_and_yield(L, "input_str");
+}
+
+// ---- NPC response readers (call from the *follow-up* buildin) ----
+
+// npc_oid(player) -> bl id of the NPC the player is interacting with
+static int lw_npc_oid(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    lua_pushinteger(L, sd ? g_api->pc.get_npc_id(sd) : 0);
+    return 1;
+}
+
+// npc_menu(player) -> 1-based menu index the player picked (0 if none)
+static int lw_npc_menu(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    lua_pushinteger(L, sd ? g_api->pc.get_npc_menu(sd) : 0);
+    return 1;
+}
+
+// npc_amount(player) -> integer the player typed
+static int lw_npc_amount(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    lua_pushinteger(L, sd ? g_api->pc.get_npc_amount(sd) : 0);
+    return 1;
+}
+
+// npc_str(player) -> string the player typed
+static int lw_npc_str(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushstring(L, ""); return 1; }
+    const char* s = g_api->pc.get_npc_str(sd);
+    lua_pushstring(L, s ? s : "");
+    return 1;
+}
+
 // ---- timer support ----
 
 struct LuaTimer {
@@ -1066,17 +1349,9 @@ static int lw_register_atcmd(lua_State* L) {
 // When it yields, the script_state stays parked until something else
 // drives the coroutine forward (e.g. a sleep timer).
 
-struct BuildinCoro {
-    script_state* st         = nullptr;
-    lua_State*    T          = nullptr;
-    int           thread_ref = LUA_NOREF; // keeps T alive against GC
-    void*         token      = nullptr;   // null until first suspend
-    std::string   name;
-};
-
 // Active coroutine for the currently-running Lua wrapper. Wrappers like
-// sleep() consult this to know which script_state to suspend.
-static thread_local BuildinCoro* g_active_coro = nullptr;
+// sleep() consult `g_active_coro` (declared near the top of the file) to
+// know which script_state to suspend.
 
 // Push a value from coro->T's stack back onto the calling script_state.
 static void push_coro_return_to_script(BuildinCoro* coro, int nresults) {
@@ -1114,9 +1389,20 @@ static void drive_coro(BuildinCoro* coro, int nargs) {
     g_active_coro = nullptr;
 
     if (rc == LUA_YIELD) {
-        // The yielding wrapper has already arranged a way to be resumed
-        // (e.g. timer for sleep). Keep the coroutine alive — caller stays
-        // suspended.
+        // Two flavours of yield:
+        //
+        //   1. sleep-style — the wrapper scheduled a timer that calls back
+        //      into drive_coro and the Lua function continues. Keep the
+        //      coroutine alive.
+        //   2. dialog-style — the wrapper called clif.script* + script.suspend
+        //      because the player needs to respond. The engine resumes the
+        //      script_state itself via npc_scriptcont; our Lua coroutine is
+        //      not meant to continue (the rest of the dialog flow lives in
+        //      whatever NPC script command runs after this one). Tear down
+        //      the coroutine cleanly and don't double-resume the script.
+        if (coro->engine_resumed) {
+            cleanup_coro(coro);
+        }
         return;
     }
 
@@ -1503,6 +1789,31 @@ void register_globals(lua_State* L) {
         {"gettime",             lw_gettime},
         {"gettimestr",          lw_gettimestr},
         {"getservertime",       lw_getservertime},
+        // -- pc accessors --
+        {"countitem",           lw_countitem},
+        {"read_param",          lw_read_param},
+        {"get_equip_id",        lw_get_equip_id},
+        // -- stat bonuses --
+        {"bonus",               lw_bonus},
+        {"bonus2",              lw_bonus2},
+        {"bonus3",              lw_bonus3},
+        {"bonus4",              lw_bonus4},
+        {"bonus5",              lw_bonus5},
+        // -- variable storage --
+        {"set_var",             lw_set_var},
+        {"get_var",             lw_get_var},
+        // -- NPC dialog --
+        {"mes",                 lw_mes},
+        {"next_dialog",         lw_next_dialog},
+        {"close_dialog",        lw_close_dialog},
+        {"menu",                lw_menu},
+        {"input_int",           lw_input_int},
+        {"input_str",           lw_input_str},
+        // -- NPC response --
+        {"npc_oid",             lw_npc_oid},
+        {"npc_menu",            lw_npc_menu},
+        {"npc_amount",          lw_npc_amount},
+        {"npc_str",             lw_npc_str},
         {"timer_after",         lw_timer_after},
         {"sleep",               lw_sleep},
         {"script_suspend",      lw_script_suspend},
