@@ -497,6 +497,23 @@ static int api_npc_event(map_session_data* sd, const char* event_name, int ontou
 	return npc_event(sd, event_name, ontouch);
 }
 
+static bool api_npc_add_script_file(const char* path)
+{
+	if (!path || !*path) return false;
+	// `false` = queue only; the file is parsed later by do_init_npc.
+	return npc_addsrcfile(path, false) != 0;
+}
+
+static bool api_npc_del_script_file(const char* path)
+{
+	if (!path || !*path) return false;
+	bool was_present =
+		std::find(npc_src_files.begin(), npc_src_files.end(),
+		          std::string(path)) != npc_src_files.end();
+	npc_delsrcfile(path);
+	return was_present;
+}
+
 // ============================================================
 // Skill API wrappers
 // ============================================================
@@ -892,6 +909,8 @@ static plugin_api_t s_api = {
 	// npc sub-struct
 	{
 		api_npc_event,
+		api_npc_add_script_file,
+		api_npc_del_script_file,
 	},
 
 	// skill sub-struct
