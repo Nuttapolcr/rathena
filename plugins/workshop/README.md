@@ -89,9 +89,11 @@ db:
   - path: db/balance_overrides.yml    # detailed form
     key:      Id                      # primary-key field (default "Id")
     override: merge                   # collision policy
+  - path: db/my_status.yml            # status.yml shape — keyed by name
+    key:      Status
 ```
 
-**Override modes** (เลือกเมื่อ Id ของ entry ชนกับ mod ก่อนหน้า):
+**Override modes** (เลือกเมื่อ key ของ entry ชนกับ mod ก่อนหน้า):
 
 | mode      | พฤติกรรม                                                    |
 |-----------|-------------------------------------------------------------|
@@ -114,9 +116,24 @@ Body:
     ...
 ```
 
-`Header.Type` คือชื่อ bucket (เช่น `ITEM_DB`, `MOB_DB`, `SKILL_DB`) ที่ Lua
+`Header.Type` คือชื่อ bucket (เช่น `ITEM_DB`, `MOB_DB`, `STATUS_DB`) ที่ Lua
 ใช้อ้างอิง — Workshop ไม่ตีความ Type เป็นอย่างอื่น เก็บ entry ตามโครงสร้าง
 YAML ตรง ๆ
+
+**Key field** — ค่า `key` เลือก field ที่ใช้เป็น primary key ของ bucket
+นั้น default คือ `Id` (item_db / mob_db / skill_db style) แต่บางไฟล์ใช้
+field อื่น เช่น `db/re/status.yml` ที่ entries keyed ด้วย `Status:` name
+(ไม่มี numeric Id) — ตั้ง `key: Status` แล้ว query ด้วย name string ได้:
+
+```yaml
+db:
+  - path: ../../../db/re/status.yml    # path สัมพัทธ์จาก mod folder
+    key:  Status
+```
+
+Key เก็บเป็น string เสมอ — numeric id เก็บในรูป decimal literal ("512"),
+name key เก็บตรง ๆ ("Stone"). ฝั่ง Lua `db_get` รับทั้ง number และ string
+(number จะถูกแปลงเป็น decimal form ก่อน lookup)
 
 **ลำดับการโหลด:** ทุก mod ในลำดับ topological+load_order — สำหรับ mod
 แต่ละตัว DB files โหลด **ก่อน** scripts จึงสามารถเรียก `db_get` / `db_each`
@@ -126,13 +143,15 @@ YAML ตรง ๆ
 
 ```lua
 db_count('ITEM_DB')                   -- → int
-db_has  ('ITEM_DB', 90001)            -- → bool
+db_has  ('ITEM_DB', 90001)            -- → bool (key: number or string)
 db_get  ('ITEM_DB', 90001)            -- → table or nil
+db_get  ('STATUS_DB', 'Stone')        -- name-keyed lookup
 db_types()                            -- → list of bucket names
 
-db_each('ITEM_DB', function(id, entry)
+db_each('ITEM_DB', function(key, entry)
+    -- key arrives as a number for numeric-keyed DBs, a string otherwise
     -- entry คือ Lua table ที่ recursively converted จาก YAML
-    print(id, entry.AegisName, entry.Type)
+    print(key, entry.AegisName, entry.Type)
 end)
 ```
 
@@ -243,6 +262,33 @@ gainexp(player, base_exp [, job_exp])
 heal  (player, hp [, sp])
 damage(src, target, hp [, sp, walkdelay, flag, skill_id])
 use_skill(player, skill_id, lvl [, target_aid])
+```
+
+### Status changes (SC_*)
+
+`type` is either an sc_type number or a constant name — `'FREEZE'` or
+`'SC_FREEZE'` both work. `sc_id()` resolves a name once so loops don't
+re-look-up. Durations are milliseconds. From Lua the rate is always 100%
+(`sc_start` applies the status unconditionally).
+
+```lua
+sc_id("FREEZE")                       -- → numeric sc_type, -1 if unknown
+
+sc_start(player, "FREEZE", 5000)              -- 5s freeze
+sc_start(player, "BLESSING", 60000, 10)       -- Blessing lv10, val1=10
+sc_start(player, scid, dur, v1, v2, v3, v4 [, flag])
+                                              -- flag: SCSTART_* bitmask
+                                              -- (NOAVOID 0x1, NOTICKDEF 0x2,
+                                              --  LOADED 0x4, NORATEDEF 0x8,
+                                              --  NOICON 0x10), default 0
+
+sc_start_from(src, target, type, dur [, v1..v4 [, flag]])
+                                              -- attribute to a source bl
+
+sc_end   (player, type)               -- → 1 if a status was removed
+sc_clear (player [, all])             -- all=true drops permanent ones too
+sc_active(player, type)               -- → bool
+sc_val   (player, type, which)        -- val1..val4 of an active SC (which 1..4)
 ```
 
 ### World / map

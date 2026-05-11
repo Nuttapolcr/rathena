@@ -219,6 +219,102 @@ static int lw_heal(lua_State* L) {
     return 1;
 }
 
+// ---- status changes (SC_*) ----
+
+// Resolve a Lua arg that's either a numeric sc_type or an SC name string.
+// Returns SC_NONE (-1) for an unrecognised string.
+static int32_t sc_type_from_arg(lua_State* L, int idx) {
+    if (lua_isinteger(L, idx) || lua_isnumber(L, idx))
+        return (int32_t)lua_tointeger(L, idx);
+    if (lua_isstring(L, idx))
+        return g_api->status.sc_id(lua_tostring(L, idx));
+    return -1; // SC_NONE
+}
+
+// sc_id("FREEZE") -> numeric sc_type (accepts "SC_FREEZE" too); -1 if unknown
+static int lw_sc_id(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    lua_pushinteger(L, g_api->status.sc_id(name));
+    return 1;
+}
+
+// sc_start(player, type, duration_ms [, val1, val2, val3, val4 [, flag]]) -> bool
+//   type is a number or an SC name; rate is always 100% from Lua.
+static int lw_sc_start(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushboolean(L, 0); return 1; }
+    int32_t type = sc_type_from_arg(L, 2);
+    int64_t dur  = luaL_checkinteger(L, 3);
+    int32_t v1   = (int32_t)luaL_optinteger(L, 4, 0);
+    int32_t v2   = (int32_t)luaL_optinteger(L, 5, 0);
+    int32_t v3   = (int32_t)luaL_optinteger(L, 6, 0);
+    int32_t v4   = (int32_t)luaL_optinteger(L, 7, 0);
+    int32_t flag = (int32_t)luaL_optinteger(L, 8, 0);
+    bool ok = g_api->status.change_start(nullptr, g_api->pc.as_bl(sd),
+                                          type, 10000, v1, v2, v3, v4,
+                                          dur, flag);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+// sc_start_from(src_player, target_player, type, duration_ms [, v1..v4 [, flag]])
+//   like sc_start but attributes the status to a source (affects some SCs).
+static int lw_sc_start_from(lua_State* L) {
+    map_session_data* src = lua_isnoneornil(L, 1) ? nullptr : sd_from_arg(L, 1);
+    map_session_data* tgt = sd_from_arg(L, 2);
+    if (!tgt) { lua_pushboolean(L, 0); return 1; }
+    int32_t type = sc_type_from_arg(L, 3);
+    int64_t dur  = luaL_checkinteger(L, 4);
+    int32_t v1   = (int32_t)luaL_optinteger(L, 5, 0);
+    int32_t v2   = (int32_t)luaL_optinteger(L, 6, 0);
+    int32_t v3   = (int32_t)luaL_optinteger(L, 7, 0);
+    int32_t v4   = (int32_t)luaL_optinteger(L, 8, 0);
+    int32_t flag = (int32_t)luaL_optinteger(L, 9, 0);
+    bool ok = g_api->status.change_start(src ? g_api->pc.as_bl(src) : nullptr,
+                                          g_api->pc.as_bl(tgt),
+                                          type, 10000, v1, v2, v3, v4,
+                                          dur, flag);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+// sc_end(player, type) -> 1 if a status was removed
+static int lw_sc_end(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t type = sc_type_from_arg(L, 2);
+    lua_pushinteger(L, g_api->status.change_end(g_api->pc.as_bl(sd), type));
+    return 1;
+}
+
+// sc_clear(player [, all]) — all=true wipes even permanent statuses
+static int lw_sc_clear(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    bool all = lua_toboolean(L, 2);
+    g_api->status.change_clear(g_api->pc.as_bl(sd), all ? 0 : 1);
+    return 0;
+}
+
+// sc_active(player, type) -> bool
+static int lw_sc_active(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushboolean(L, 0); return 1; }
+    int32_t type = sc_type_from_arg(L, 2);
+    lua_pushboolean(L, g_api->status.has_change(g_api->pc.as_bl(sd), type) ? 1 : 0);
+    return 1;
+}
+
+// sc_val(player, type, which) -> int  (which is 1..4)
+static int lw_sc_val(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t type  = sc_type_from_arg(L, 2);
+    int32_t which = (int32_t)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, g_api->status.change_val(g_api->pc.as_bl(sd), type, which));
+    return 1;
+}
+
 // monster("mapname", x, y, "name", mob_id [, amount])
 static int lw_monster(lua_State* L) {
     const char* m  = luaL_checkstring(L, 1);
@@ -1795,11 +1891,43 @@ static void push_yaml_node(lua_State* L, const YAML::Node& n) {
     lua_pushnil(L);
 }
 
-// db_get(type, id) -> table or nil
+// Read a DB key argument: a Lua number is rendered to its decimal form
+// (matching how numeric `Id` fields are stored), a string is used as-is.
+static std::string db_key_from_arg(lua_State* L, int idx) {
+    if (lua_isinteger(L, idx)) {
+        return std::to_string((long long)lua_tointeger(L, idx));
+    }
+    if (lua_isnumber(L, idx)) {
+        // Non-integer numbers don't make sensible keys; truncate.
+        return std::to_string((long long)lua_tointeger(L, idx));
+    }
+    const char* s = luaL_checkstring(L, idx);
+    return s ? s : "";
+}
+
+// Push a stored key back to Lua: all-digit keys (optionally signed) come
+// back as integers so item_db consumers keep numeric ids; everything
+// else (status names, etc.) comes back as a string.
+static void push_db_key(lua_State* L, const std::string& key) {
+    if (!key.empty()) {
+        size_t i = (key[0] == '-' || key[0] == '+') ? 1 : 0;
+        bool all_digits = i < key.size();
+        for (; i < key.size(); ++i) {
+            if (key[i] < '0' || key[i] > '9') { all_digits = false; break; }
+        }
+        if (all_digits) {
+            lua_pushinteger(L, (lua_Integer)std::stoll(key));
+            return;
+        }
+    }
+    lua_pushstring(L, key.c_str());
+}
+
+// db_get(type, key) -> table or nil    (key: number or string)
 static int lw_db_get(lua_State* L) {
     const char* type = luaL_checkstring(L, 1);
-    int64_t id       = luaL_checkinteger(L, 2);
-    YAML::Node n = workshop::DbStore::instance().get(type, id);
+    std::string key  = db_key_from_arg(L, 2);
+    YAML::Node n = workshop::DbStore::instance().get(type, key);
     if (!n) {
         lua_pushnil(L);
         return 1;
@@ -1808,11 +1936,11 @@ static int lw_db_get(lua_State* L) {
     return 1;
 }
 
-// db_has(type, id) -> bool
+// db_has(type, key) -> bool
 static int lw_db_has(lua_State* L) {
     const char* type = luaL_checkstring(L, 1);
-    int64_t id       = luaL_checkinteger(L, 2);
-    lua_pushboolean(L, workshop::DbStore::instance().has(type, id) ? 1 : 0);
+    std::string key  = db_key_from_arg(L, 2);
+    lua_pushboolean(L, workshop::DbStore::instance().has(type, key) ? 1 : 0);
     return 1;
 }
 
@@ -1823,7 +1951,8 @@ static int lw_db_count(lua_State* L) {
     return 1;
 }
 
-// db_each(type, function(id, entry) ... end)
+// db_each(type, function(key, entry) ... end)
+//   key arrives as a number for numeric-keyed DBs, a string otherwise.
 static int lw_db_each(lua_State* L) {
     const char* type = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
@@ -1832,10 +1961,10 @@ static int lw_db_each(lua_State* L) {
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
     workshop::DbStore::instance().each(type,
-        [L, ref](int64_t id, const YAML::Node& entry) {
+        [L, ref](const std::string& key, const YAML::Node& entry) {
             lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
             if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return; }
-            lua_pushinteger(L, id);
+            push_db_key(L, key);
             push_yaml_node(L, entry);
             if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
                 wlog_warning("db_each error: %s", lua_tostring(L, -1));
@@ -1877,6 +2006,14 @@ void register_globals(lua_State* L) {
         {"gainexp",             lw_gainexp},
         {"warp",                lw_warp},
         {"heal",                lw_heal},
+        // -- status changes --
+        {"sc_id",               lw_sc_id},
+        {"sc_start",            lw_sc_start},
+        {"sc_start_from",       lw_sc_start_from},
+        {"sc_end",              lw_sc_end},
+        {"sc_clear",            lw_sc_clear},
+        {"sc_active",           lw_sc_active},
+        {"sc_val",              lw_sc_val},
         {"monster",             lw_monster},
         {"message",             lw_message},
         {"emotion",             lw_emotion},

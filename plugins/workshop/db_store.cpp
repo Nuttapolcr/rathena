@@ -75,47 +75,43 @@ bool DbStore::load_file(const std::string& path,
 
     int loaded = 0, replaced = 0, skipped = 0, merged = 0;
     for (auto entry : body) {
-        if (!entry[key_field]) {
-            wlog_warning("db: %s: entry missing key '%s'",
+        if (!entry[key_field] || !entry[key_field].IsScalar()) {
+            wlog_warning("db: %s: entry missing scalar key '%s'",
                          path.c_str(), key_field.c_str());
             continue;
         }
 
-        int64_t id = 0;
-        try {
-            id = entry[key_field].as<int64_t>();
-        } catch (const std::exception&) {
-            wlog_warning("db: %s: non-integer %s in entry — skipping",
-                         path.c_str(), key_field.c_str());
-            continue;
-        }
+        // Keys are stored verbatim as the scalar's text. For numeric ids
+        // (`Id: 512`) that's "512"; for name keys (`Status: Stone`) it's
+        // "Stone" — both round-trip through std::map<std::string,...>.
+        std::string key = entry[key_field].Scalar();
 
-        auto it = bucket.find(id);
+        auto it = bucket.find(key);
         if (it == bucket.end()) {
-            bucket[id] = DbEntry{mod_name, YAML::Clone(entry)};
+            bucket[key] = DbEntry{mod_name, YAML::Clone(entry)};
             ++loaded;
             continue;
         }
 
         switch (mode) {
         case OverrideMode::Replace:
-            bucket[id] = DbEntry{mod_name, YAML::Clone(entry)};
+            bucket[key] = DbEntry{mod_name, YAML::Clone(entry)};
             ++replaced;
             break;
         case OverrideMode::Skip:
             ++skipped;
             break;
         case OverrideMode::Error:
-            wlog_error("db: %s: %s id=%lld already loaded by mod '%s' "
+            wlog_error("db: %s: %s key='%s' already loaded by mod '%s' "
                        "(override: error) — skipping",
-                       path.c_str(), type.c_str(), (long long)id,
+                       path.c_str(), type.c_str(), key.c_str(),
                        it->second.mod_name.c_str());
             ++skipped;
             break;
         case OverrideMode::Merge: {
             YAML::Node out = YAML::Clone(it->second.body);
             deep_merge(out, entry);
-            bucket[id] = DbEntry{mod_name, out};
+            bucket[key] = DbEntry{mod_name, out};
             ++merged;
             break;
         }
@@ -129,16 +125,16 @@ bool DbStore::load_file(const std::string& path,
     return true;
 }
 
-bool DbStore::has(const std::string& type, int64_t id) const {
+bool DbStore::has(const std::string& type, const std::string& key) const {
     auto it = store_.find(type);
     if (it == store_.end()) return false;
-    return it->second.find(id) != it->second.end();
+    return it->second.find(key) != it->second.end();
 }
 
-YAML::Node DbStore::get(const std::string& type, int64_t id) const {
+YAML::Node DbStore::get(const std::string& type, const std::string& key) const {
     auto it = store_.find(type);
     if (it == store_.end()) return YAML::Node();
-    auto eit = it->second.find(id);
+    auto eit = it->second.find(key);
     if (eit == it->second.end()) return YAML::Node();
     return eit->second.body;
 }
@@ -149,7 +145,7 @@ size_t DbStore::count(const std::string& type) const {
 }
 
 void DbStore::each(const std::string& type,
-                   const std::function<void(int64_t, const YAML::Node&)>& fn) const {
+                   const std::function<void(const std::string&, const YAML::Node&)>& fn) const {
     auto it = store_.find(type);
     if (it == store_.end()) return;
     for (auto& kv : it->second) {

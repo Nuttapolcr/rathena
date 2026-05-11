@@ -25,27 +25,31 @@ struct DbEntry {
 };
 
 // Singleton holding every DB entry the workshop has parsed across all mods.
-// Keyed by Header.Type (e.g. "ITEM_DB", "MOB_DB") then by the entry's primary
-// key (numeric, default field name "Id").
+// Keyed by Header.Type (e.g. "ITEM_DB", "STATUS_DB") then by the entry's
+// primary key. Keys are stored as strings so numeric-keyed files
+// (item_db.yml: `Id: 512`) and name-keyed files (status.yml: `Status: Stone`)
+// both fit. Numeric keys are kept in their decimal-literal form.
 class DbStore {
 public:
     static DbStore& instance();
 
     // Load one rAthena-style YAML file. Reads `Header.Type`, iterates `Body`
-    // and indexes each entry by `key_field` (numeric). Applies `mode` to
-    // resolve collisions.
+    // and indexes each entry by `key_field` (default "Id"). Applies `mode`
+    // to resolve collisions.
     bool load_file(const std::string& path,
                    const std::string& mod_name,
                    const std::string& key_field,   // "" → "Id"
                    OverrideMode       mode);
 
     // ---- queries ----
-    bool       has  (const std::string& type, int64_t id) const;
-    YAML::Node get  (const std::string& type, int64_t id) const;
+    // `key` is the entry's primary-key string. Callers that hold a numeric
+    // id should pass its decimal form (the Lua layer does this for them).
+    bool       has  (const std::string& type, const std::string& key) const;
+    YAML::Node get  (const std::string& type, const std::string& key) const;
     size_t     count(const std::string& type) const;
 
     void each(const std::string& type,
-              const std::function<void(int64_t, const YAML::Node&)>& fn) const;
+              const std::function<void(const std::string&, const YAML::Node&)>& fn) const;
 
     std::vector<std::string> types() const;
 
@@ -56,8 +60,8 @@ private:
     DbStore() = default;
     DbStore(const DbStore&) = delete;
 
-    // type → id → entry
-    std::map<std::string, std::map<int64_t, DbEntry>> store_;
+    // type → key → entry
+    std::map<std::string, std::map<std::string, DbEntry>> store_;
 };
 
 // Parse the override-mode string from modinfo.yml; unknown values map to
