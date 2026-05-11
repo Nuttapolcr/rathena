@@ -412,6 +412,49 @@ api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello, /*user_data=*/
 |---|---|
 | `open(sd)` | Open the player's personal storage |
 
+### `sc` — Plugin status changes
+
+Register custom status effects that take part in `status.cpp`'s stat
+recalculation, carry up to four parameters, expire on a timer, and
+optionally show a client status icon.
+
+| Function | Purpose |
+|---|---|
+| `register_sc(name, calc_flag, icon, calc, user_data)` | Define a new SC; returns its id (or -1) |
+| `start(bl, id, v1, v2, v3, v4, duration_ms)` | Apply / refresh on `bl` (`duration_ms<=0` = permanent) |
+| `end(bl, id)` | Remove from `bl` |
+| `active(bl, id, &v1, &v2, &v3, &v4)` | Query; out pointers may be null |
+
+`calc_flag` is an OR of `PLUGIN_SCB_*` bits — which stats the SC
+touches: `STR / AGI / VIT / INT / DEX / LUK / MAXHP / MAXSP / SPEED`.
+The base-stat bits cascade automatically (a STR-affecting SC also makes
+the engine recompute batk/matk/etc.). `icon` is an `EFST_*` value for
+the client status bar, or 0 for none.
+
+The `calc` callback runs once per affected stat during recalculation:
+
+```cpp
+// calc_flag was PLUGIN_SCB_STR | PLUGIN_SCB_AGI, so this fires for
+// scb_kind == PLUGIN_SCB_STR and again for PLUGIN_SCB_AGI.
+static int32_t my_sc_calc(block_list* bl, int32_t sc_id, int32_t scb_kind,
+                          int32_t cur_value, int32_t v1, int32_t v2,
+                          int32_t v3, int32_t v4, void* user_data) {
+    if (scb_kind == PLUGIN_SCB_STR || scb_kind == PLUGIN_SCB_AGI)
+        return cur_value + v1;       // +v1 to STR and AGI
+    return cur_value;
+}
+
+// In plugin_init:
+int32_t my_sc = api->sc.register_sc("Hyper", PLUGIN_SCB_STR | PLUGIN_SCB_AGI,
+                                    /*icon=*/0, my_sc_calc, nullptr);
+
+// Later — give the player +25 STR/AGI for 30s:
+api->sc.start(api->pc.as_bl(sd), my_sc, /*v1=*/25, 0, 0, 0, 30 * 1000);
+```
+
+Active SCs are cleared automatically when the entity is destroyed
+(logout, mob death, NPC reload) and on plugin unload.
+
 ### `clif` — Client packets
 
 Pre-built sends for common client-facing effects.
@@ -598,6 +641,32 @@ static void on_my_packet(int32_t fd, map_session_data* sd, void* /*user_data*/) 
 api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet, /*user_data=*/nullptr);
 ```
 
+### Custom status changes
+
+```cpp
+// A debuff that halves SPEED (speed value is "ms per cell" — bigger is
+// slower — so we multiply).
+static int32_t slow_calc(block_list* bl, int32_t sc_id, int32_t scb_kind,
+                         int32_t cur, int32_t pct, int32_t, int32_t, int32_t,
+                         void* /*user_data*/) {
+    if (scb_kind == PLUGIN_SCB_SPEED)
+        return cur + cur * pct / 100;   // pct = 50  →  +50% travel time
+    return cur;
+}
+
+// In plugin_init:
+int32_t sc_slow = api->sc.register_sc("Slow", PLUGIN_SCB_SPEED, 0, slow_calc, nullptr);
+
+// On a HOOK_MOB_KILL or wherever you want to punish someone:
+api->sc.start(target_bl, sc_slow, /*pct=*/50, 0, 0, 0, /*ms=*/10000);
+// ... and to lift it early:
+api->sc.end(target_bl, sc_slow);
+```
+
+The engine recalculates the affected stats both when the SC starts and
+when it ends, so the modifier appears and disappears cleanly without
+any extra bookkeeping on your side.
+
 ---
 
 ## Example Plugin
@@ -619,6 +688,7 @@ demonstrates every category. Highlights:
 | `plugin_inventory_report` | `pc.countitem` + `pc.read_param` + `script.set_var_num/get_var_num` |
 | `plugin_buff_str10` | `pc.bonus` |
 | `plugin_dialog_demo` + `plugin_get_npc_menu` | `clif.scriptmes/scriptmenu` + `script.suspend` + `pc.get_npc_menu` |
+| `plugin_hyper secs` + `plugin_hyper_status` | `sc.register_sc` + `sc.start` + `sc.active` (custom SC: +25 STR/AGI) |
 
 It also installs a handler for inbound packet `0x0CFE` to echo a reply
 on `0x0CFF`.

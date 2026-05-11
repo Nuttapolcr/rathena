@@ -112,6 +112,26 @@ struct PluginPacketEntry {
 };
 static std::unordered_map<uint16_t, PluginPacketEntry> plugin_packet_handlers;
 
+// ---- Plugin status changes ----
+// Definitions are indexed by the id returned from sc.register_sc().
+struct PluginSCDef {
+	std::string         name;
+	int32_t             calc_flag;   // OR of e_plugin_scb
+	int32_t             icon;         // EFST_* or 0
+	plugin_sc_calc_func calc;
+	void*               user_data;
+};
+static std::vector<PluginSCDef> plugin_sc_defs;
+
+// Active instances live in a side table keyed on bl->id (not on the
+// status_change map, which is bounds-checked against SC_MAX everywhere).
+struct PluginSCActive {
+	int32_t sc_id;
+	int32_t val1, val2, val3, val4;
+	int32_t timer;       // INVALID_TIMER if permanent
+};
+static std::unordered_map<int32_t /*bl_id*/, std::vector<PluginSCActive>> plugin_sc_active;
+
 // ============================================================
 // Hook management API implementation
 // ============================================================
@@ -795,6 +815,154 @@ static void api_packet_send_target(block_list* bl, const void* data,
 }
 
 // ============================================================
+// Plugin status change (SC) engine
+// ============================================================
+
+// Map an e_plugin_scb mask to the engine's e_scb_flag list and trigger
+// a stat recalculation on `bl`.
+static void plugin_sc_recalc(block_list* bl, int32_t calc_flag)
+{
+	if (!bl || !calc_flag) return;
+	std::vector<e_scb_flag> flags;
+	if (calc_flag & PLUGIN_SCB_STR)   flags.push_back(SCB_STR);
+	if (calc_flag & PLUGIN_SCB_AGI)   flags.push_back(SCB_AGI);
+	if (calc_flag & PLUGIN_SCB_VIT)   flags.push_back(SCB_VIT);
+	if (calc_flag & PLUGIN_SCB_INT)   flags.push_back(SCB_INT);
+	if (calc_flag & PLUGIN_SCB_DEX)   flags.push_back(SCB_DEX);
+	if (calc_flag & PLUGIN_SCB_LUK)   flags.push_back(SCB_LUK);
+	if (calc_flag & PLUGIN_SCB_MAXHP) flags.push_back(SCB_MAXHP);
+	if (calc_flag & PLUGIN_SCB_MAXSP) flags.push_back(SCB_MAXSP);
+	if (calc_flag & PLUGIN_SCB_SPEED) flags.push_back(SCB_SPEED);
+	if (!flags.empty())
+		status_calc_bl(bl, flags);
+}
+
+// Locate an active plugin SC entry; returns nullptr if not present.
+static PluginSCActive* plugin_sc_find(int32_t bl_id, int32_t sc_id)
+{
+	auto it = plugin_sc_active.find(bl_id);
+	if (it == plugin_sc_active.end()) return nullptr;
+	for (auto& e : it->second)
+		if (e.sc_id == sc_id) return &e;
+	return nullptr;
+}
+
+// Show/hide the client status icon for an SC, if it has one.
+static void plugin_sc_icon(block_list* bl, int32_t sc_id, bool show, int64_t duration_ms,
+                           int32_t v1, int32_t v2, int32_t v3)
+{
+	if (sc_id < 0 || sc_id >= static_cast<int>(plugin_sc_defs.size())) return;
+	int32_t icon = plugin_sc_defs[sc_id].icon;
+	if (icon <= 0) return;
+	clif_status_change(bl, icon, show ? 1 : 0,
+	                   show ? static_cast<t_tick>(duration_ms) : 0, v1, v2, v3);
+}
+
+static int32 plugin_sc_expire_timer(int32 /*tid*/, t_tick /*tick*/, int32 id, intptr_t data)
+{
+	int32_t sc_id = static_cast<int32_t>(data);
+	auto it = plugin_sc_active.find(id);
+	if (it == plugin_sc_active.end()) return 0;
+
+	int32_t calc_flag = 0;
+	bool removed = false;
+	for (auto e = it->second.begin(); e != it->second.end(); ++e) {
+		if (e->sc_id == sc_id) {
+			if (sc_id >= 0 && sc_id < static_cast<int>(plugin_sc_defs.size()))
+				calc_flag = plugin_sc_defs[sc_id].calc_flag;
+			it->second.erase(e);
+			removed = true;
+			break;
+		}
+	}
+	if (it->second.empty())
+		plugin_sc_active.erase(it);
+
+	if (removed) {
+		block_list* bl = map_id2bl(id);
+		if (bl) {
+			plugin_sc_icon(bl, sc_id, false, 0, 0, 0, 0);
+			plugin_sc_recalc(bl, calc_flag);
+		}
+	}
+	return 0;
+}
+
+static int32_t api_sc_register(const char* name, int32_t calc_flag, int32_t icon,
+                               plugin_sc_calc_func calc, void* user_data)
+{
+	if (!calc) return -1;
+	int32_t id = static_cast<int32_t>(plugin_sc_defs.size());
+	plugin_sc_defs.push_back({ name ? name : "", calc_flag, icon, calc, user_data });
+	return id;
+}
+
+static bool api_sc_start(block_list* bl, int32_t sc_id,
+                         int32_t v1, int32_t v2, int32_t v3, int32_t v4,
+                         int64_t duration_ms)
+{
+	if (!bl || sc_id < 0 || sc_id >= static_cast<int>(plugin_sc_defs.size()))
+		return false;
+
+	auto& vec = plugin_sc_active[bl->id];
+	PluginSCActive* e = nullptr;
+	for (auto& a : vec)
+		if (a.sc_id == sc_id) { e = &a; break; }
+	if (!e) {
+		vec.push_back({ sc_id, 0, 0, 0, 0, INVALID_TIMER });
+		e = &vec.back();
+	}
+
+	// Replace stored params; reset the expiry timer.
+	if (e->timer != INVALID_TIMER) {
+		delete_timer(e->timer, plugin_sc_expire_timer);
+		e->timer = INVALID_TIMER;
+	}
+	e->val1 = v1; e->val2 = v2; e->val3 = v3; e->val4 = v4;
+	if (duration_ms > 0)
+		e->timer = add_timer(gettick() + static_cast<t_tick>(duration_ms),
+		                     plugin_sc_expire_timer, bl->id, static_cast<intptr_t>(sc_id));
+
+	plugin_sc_icon(bl, sc_id, true, duration_ms, v1, v2, v3);
+	plugin_sc_recalc(bl, plugin_sc_defs[sc_id].calc_flag);
+	return true;
+}
+
+static bool api_sc_end(block_list* bl, int32_t sc_id)
+{
+	if (!bl) return false;
+	auto it = plugin_sc_active.find(bl->id);
+	if (it == plugin_sc_active.end()) return false;
+
+	for (auto e = it->second.begin(); e != it->second.end(); ++e) {
+		if (e->sc_id != sc_id) continue;
+		if (e->timer != INVALID_TIMER)
+			delete_timer(e->timer, plugin_sc_expire_timer);
+		it->second.erase(e);
+		if (it->second.empty())
+			plugin_sc_active.erase(it);
+		plugin_sc_icon(bl, sc_id, false, 0, 0, 0, 0);
+		if (sc_id >= 0 && sc_id < static_cast<int>(plugin_sc_defs.size()))
+			plugin_sc_recalc(bl, plugin_sc_defs[sc_id].calc_flag);
+		return true;
+	}
+	return false;
+}
+
+static bool api_sc_active(block_list* bl, int32_t sc_id,
+                          int32_t* o1, int32_t* o2, int32_t* o3, int32_t* o4)
+{
+	if (!bl) return false;
+	PluginSCActive* e = plugin_sc_find(bl->id, sc_id);
+	if (!e) return false;
+	if (o1) *o1 = e->val1;
+	if (o2) *o2 = e->val2;
+	if (o3) *o3 = e->val3;
+	if (o4) *o4 = e->val4;
+	return true;
+}
+
+// ============================================================
 // Main API struct — handed to every plugin on init
 // ============================================================
 
@@ -974,6 +1142,14 @@ static plugin_api_t s_api = {
 		api_packet_send_self,
 		api_packet_send_target,
 	},
+
+	// sc sub-struct
+	{
+		api_sc_register,
+		api_sc_start,
+		api_sc_end,
+		api_sc_active,
+	},
 };
 
 // ============================================================
@@ -1009,6 +1185,40 @@ const char* plugin_get_cmd_arg(int idx)
 void plugin_script_state_freed(script_state* st)
 {
 	if (st) suspended_states.erase(st);
+}
+
+// ============================================================
+// Public: plugin SC integration points
+// ============================================================
+
+int32_t plugin_status_calc(block_list* bl, int32_t scb_kind, int32_t cur_value)
+{
+	if (!bl || plugin_sc_active.empty()) return cur_value;
+	auto it = plugin_sc_active.find(bl->id);
+	if (it == plugin_sc_active.end()) return cur_value;
+
+	int32_t v = cur_value;
+	for (const auto& a : it->second) {
+		if (a.sc_id < 0 || a.sc_id >= static_cast<int>(plugin_sc_defs.size()))
+			continue;
+		const PluginSCDef& def = plugin_sc_defs[a.sc_id];
+		if (!(def.calc_flag & scb_kind) || !def.calc)
+			continue;
+		v = def.calc(bl, a.sc_id, scb_kind, v,
+		             a.val1, a.val2, a.val3, a.val4, def.user_data);
+	}
+	return v;
+}
+
+void plugin_sc_clear(block_list* bl)
+{
+	if (!bl) return;
+	auto it = plugin_sc_active.find(bl->id);
+	if (it == plugin_sc_active.end()) return;
+	for (auto& a : it->second)
+		if (a.timer != INVALID_TIMER)
+			delete_timer(a.timer, plugin_sc_expire_timer);
+	plugin_sc_active.erase(it);
 }
 
 // ============================================================
@@ -1103,6 +1313,14 @@ void plugin_manager_final(void)
 	for (auto& kv : plugin_packet_handlers)
 		packetdb_addpacket(kv.first, 0, nullptr, 0);
 	plugin_packet_handlers.clear();
+
+	// Cancel and drop all active plugin SC timers/instances.
+	for (auto& kv : plugin_sc_active)
+		for (auto& a : kv.second)
+			if (a.timer != INVALID_TIMER)
+				delete_timer(a.timer, plugin_sc_expire_timer);
+	plugin_sc_active.clear();
+	plugin_sc_defs.clear();
 
 	for (auto it = loaded_plugins.rbegin(); it != loaded_plugins.rend(); ++it) {
 		if (it->pfn_final)
