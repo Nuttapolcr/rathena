@@ -35,6 +35,7 @@
 #include "path.hpp"
 #include "pc.hpp"
 #include "pet.hpp"
+#include "plugin.hpp"
 #include "storage.hpp"
 #include "trade.hpp"
 
@@ -3917,6 +3918,10 @@ int32 unit_free(block_list *bl, clr_type clrtype)
 	struct unit_data *ud = unit_bl2ud( bl );
 
 	nullpo_ret(ud);
+
+	// Drop any plugin-registered status changes before the block-list id
+	// can be recycled by a future entity.
+	plugin_sc_clear(bl);
 
 	FreeBlockLock freeLock;
 

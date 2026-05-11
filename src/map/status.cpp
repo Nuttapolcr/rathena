@@ -5862,6 +5862,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_STR]) {
 		status->str = status_calc_str(&bl, sc, b_status->str);
+		status->str = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_STR, status->str));
 		flag.set(SCB_BATK);
 		if( bl.type == BL_HOM )
 			flag.set(SCB_WATK);
@@ -5869,6 +5870,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_AGI]) {
 		status->agi = status_calc_agi(&bl, sc, b_status->agi);
+		status->agi = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_AGI, status->agi));
 		flag.set(SCB_FLEE);
 #ifdef RENEWAL
 		flag.set(SCB_DEF2);
@@ -5881,6 +5883,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_VIT]) {
 		status->vit = status_calc_vit(&bl, sc, b_status->vit);
+		status->vit = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_VIT, status->vit));
 		flag.set(SCB_DEF2);
 		flag.set(SCB_MDEF2);
 		if( bl.type&(BL_PC|BL_HOM|BL_MER|BL_ELEM) )
@@ -5891,6 +5894,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_INT]) {
 		status->int_ = status_calc_int(&bl, sc, b_status->int_);
+		status->int_ = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_INT, status->int_));
 		flag.set(SCB_MATK);
 		flag.set(SCB_MDEF2);
 		if( bl.type&(BL_PC|BL_HOM|BL_MER|BL_ELEM) )
@@ -5901,6 +5905,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_DEX]) {
 		status->dex = status_calc_dex(&bl, sc, b_status->dex);
+		status->dex = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_DEX, status->dex));
 		flag.set(SCB_BATK);
 		flag.set(SCB_HIT);
 #ifdef RENEWAL
@@ -5915,6 +5920,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_LUK]) {
 		status->luk = status_calc_luk(&bl, sc, b_status->luk);
+		status->luk = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_LUK, status->luk));
 		flag.set(SCB_BATK);
 		flag.set(SCB_CRI);
 		flag.set(SCB_FLEE2);
@@ -6081,6 +6087,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 
 	if(flag[SCB_SPEED]) {
 		status->speed = status_calc_speed(&bl, sc, b_status->speed);
+		status->speed = static_cast<unsigned short>(plugin_status_calc(&bl, PLUGIN_SCB_SPEED, status->speed));
 
 		switch (bl.type) {
 		case BL_PC:
@@ -6212,6 +6219,8 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 		else
 			status->max_hp = status_calc_maxhp(&bl, b_status->max_hp);
 
+		status->max_hp = static_cast<uint32>(plugin_status_calc(&bl, PLUGIN_SCB_MAXHP, status->max_hp));
+
 		if( status->hp > status->max_hp ) { // !FIXME: Should perhaps a status_zap should be issued?
 			status->hp = status->max_hp;
 			if( sd ) clif_updatestatus(*sd,SP_HP);
@@ -6229,6 +6238,8 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 		}
 		else
 			status->max_sp = status_calc_maxsp(&bl, b_status->max_sp);
+
+		status->max_sp = static_cast<uint32>(plugin_status_calc(&bl, PLUGIN_SCB_MAXSP, status->max_sp));
 
 		if( status->sp > status->max_sp ) {
 			status->sp = status->max_sp;

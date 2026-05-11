@@ -375,6 +375,37 @@ typedef int32_t (*plugin_timer_func)(int32_t tid, int64_t tick,
 typedef void (*plugin_packet_func)(int32_t fd, struct map_session_data* sd,
                                    void* user_data);
 
+// ---- Plugin status changes (SC) ----
+
+// Calc-flag bits: which stats a plugin SC influences. When the SC
+// starts or ends, the engine recalculates these stats on the entity
+// and runs the SC's calc callback for each one. Base-stat bits cascade
+// automatically (e.g. PLUGIN_SCB_STR also recalculates batk/matk).
+// Mirrors a subset of e_scb_flag in status.hpp.
+enum e_plugin_scb : int32_t {
+	PLUGIN_SCB_STR   = 1 << 0,
+	PLUGIN_SCB_AGI   = 1 << 1,
+	PLUGIN_SCB_VIT   = 1 << 2,
+	PLUGIN_SCB_INT   = 1 << 3,
+	PLUGIN_SCB_DEX   = 1 << 4,
+	PLUGIN_SCB_LUK   = 1 << 5,
+	PLUGIN_SCB_MAXHP = 1 << 6,
+	PLUGIN_SCB_MAXSP = 1 << 7,
+	PLUGIN_SCB_SPEED = 1 << 8,
+};
+
+// Calc callback for a plugin SC. Invoked once per affected stat during
+// status recalculation. `scb_kind` is a single PLUGIN_SCB_* bit telling
+// you which stat is being computed; `cur_value` is the value the engine
+// has so far; return the new value (do `cur_value + N`, `cur_value * f`,
+// caps, etc.). `val1..val4` are the parameters passed to sc.start().
+typedef int32_t (*plugin_sc_calc_func)(struct block_list* bl,
+                                       int32_t sc_id, int32_t scb_kind,
+                                       int32_t cur_value,
+                                       int32_t val1, int32_t val2,
+                                       int32_t val3, int32_t val4,
+                                       void* user_data);
+
 // ============================================================
 // Server function API sub-structs
 // ============================================================
@@ -702,6 +733,40 @@ struct plugin_log_api_t {
 	void (*debug)  (const char* msg);
 };
 
+// ---- Plugin status changes ----
+// Register custom status effects that participate in status.cpp's stat
+// recalculation, carry up to four parameters, expire on a timer, and
+// optionally show a client status icon.
+struct plugin_sc_api_t {
+	// Register a new plugin SC. Returns its id (>= 0) for use with the
+	// other calls, or -1 on failure (bad args / out of slots).
+	//   name      — diagnostic label.
+	//   calc_flag — OR of e_plugin_scb bits; the stats this SC touches.
+	//   icon      — EFST_* client status icon (0 = no icon).
+	//   calc      — invoked during status recalculation per affected stat.
+	//   user_data — passed unchanged to `calc`.
+	int32_t (*register_sc)(const char* name, int32_t calc_flag, int32_t icon,
+	                       plugin_sc_calc_func calc, void* user_data);
+
+	// Start (or refresh) a plugin SC on `bl`. duration_ms <= 0 makes it
+	// permanent (until end() or the entity is destroyed). Re-starting an
+	// active SC replaces its val1..val4 and resets the timer. Triggers a
+	// stat recalc for the SC's calc_flag. Returns true on success.
+	bool (*start)(struct block_list* bl, int32_t sc_id,
+	              int32_t val1, int32_t val2, int32_t val3, int32_t val4,
+	              int64_t duration_ms);
+
+	// End a plugin SC on `bl`. Triggers a stat recalc. Returns true if
+	// it was active.
+	bool (*end)(struct block_list* bl, int32_t sc_id);
+
+	// Is the SC active on `bl`? If so and an out_ pointer is non-null,
+	// fills it with the stored val1..val4.
+	bool (*active)(struct block_list* bl, int32_t sc_id,
+	               int32_t* out_val1, int32_t* out_val2,
+	               int32_t* out_val3, int32_t* out_val4);
+};
+
 // ---- Custom client packets ----
 // Lets plugins install handlers for previously-unused packet IDs, read the
 // incoming buffer, and push outbound packets to clients. The packet ID
@@ -766,6 +831,7 @@ struct plugin_api_t {
 	struct plugin_timer_api_t   timer;
 	struct plugin_log_api_t     log;
 	struct plugin_packet_api_t  packet;
+	struct plugin_sc_api_t      sc;
 };
 
 // ---- Plugin metadata ----
@@ -800,5 +866,14 @@ int32_t     plugin_dispatch_script_cmd(int idx, struct script_state* st);
 // so any plugin-held suspend tokens for it become no-ops on resume().
 // Called from script_free_state() in script.cpp.
 void        plugin_script_state_freed(struct script_state* st);
+
+// Apply every active plugin SC on `bl` that affects `scb_kind` (one of
+// the e_plugin_scb bits) to `cur_value`, returning the result.
+// Called from status_calc_bl() in status.cpp.
+int32_t     plugin_status_calc(struct block_list* bl, int32_t scb_kind, int32_t cur_value);
+
+// Drop all active plugin SCs for `bl` (called from unit_free() so a
+// recycled block-list id does not inherit stale effects).
+void        plugin_sc_clear(struct block_list* bl);
 
 #endif // MAP_PLUGIN_HPP

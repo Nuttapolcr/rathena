@@ -19,6 +19,8 @@
  *   plugin_inventory_report;     // setd/getd + countitem + readparam demo
  *   plugin_buff_str10;           // pc.bonus demo (Str+10 for 60s via sc_start)
  *   plugin_dialog_demo;          // suspend + clif scriptmes/scriptmenu demo
+ *   plugin_hyper 30;             // custom SC: +25 STR/AGI for 30 seconds
+ *   .@on = plugin_hyper_status;  // 1 if the Hyper SC is currently active
  */
 
 #include <cstdio>
@@ -484,6 +486,61 @@ static int32_t buildin_plugin_get_npc_menu(script_state* st, void* /*user_data*/
 	return PLUGIN_SCRIPT_CMD_SUCCESS;
 }
 
+// ---- Custom status change demo ----
+//
+// Registers a "Hyper" SC that bumps STR and AGI while active. The id is
+// assigned by the engine at register time; we keep it in a global so
+// the script commands below can refer to it.
+static int32_t g_hyper_sc = -1;
+
+// Calc callback: invoked once per affected stat (PLUGIN_SCB_STR and
+// PLUGIN_SCB_AGI here, since that's the calc_flag we register with).
+// val1 carries the bonus amount passed to sc.start().
+static int32_t hyper_sc_calc(block_list* /*bl*/, int32_t /*sc_id*/, int32_t scb_kind,
+                             int32_t cur_value, int32_t val1, int32_t /*v2*/,
+                             int32_t /*v3*/, int32_t /*v4*/, void* /*user_data*/)
+{
+	switch (scb_kind) {
+		case PLUGIN_SCB_STR:
+		case PLUGIN_SCB_AGI:
+			return cur_value + val1;
+		default:
+			return cur_value;
+	}
+}
+
+// plugin_hyper <seconds>;
+// Apply the Hyper SC (+25 STR / +25 AGI) for <seconds>.
+static int32_t buildin_plugin_hyper(script_state* st, void* /*user_data*/)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	if (!sd || g_hyper_sc < 0) {
+		g_api->script.pushint(st, 0);
+		return PLUGIN_SCRIPT_CMD_SUCCESS;
+	}
+	int32_t secs = static_cast<int32_t>(g_api->script.getnum(st, 2));
+	if (secs <= 0) secs = 30;
+
+	// val1 = +25 bonus to each affected stat.
+	bool ok = g_api->sc.start(g_api->pc.as_bl(sd), g_hyper_sc,
+	                          25, 0, 0, 0, (int64_t)secs * 1000);
+	g_api->pc.message(g_api->pc.get_fd(sd),
+	                  ok ? "Hyper engaged: STR/AGI +25." : "Could not engage Hyper.");
+	g_api->script.pushint(st, ok ? 1 : 0);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
+// .@on = plugin_hyper_status;
+// Returns 1 if the Hyper SC is currently active on the attached player.
+static int32_t buildin_plugin_hyper_status(script_state* st, void* /*user_data*/)
+{
+	map_session_data* sd = g_api->script.rid2sd(st);
+	bool active = (sd && g_hyper_sc >= 0 &&
+	               g_api->sc.active(g_api->pc.as_bl(sd), g_hyper_sc, nullptr, nullptr, nullptr, nullptr));
+	g_api->script.pushint(st, active ? 1 : 0);
+	return PLUGIN_SCRIPT_CMD_SUCCESS;
+}
+
 // plugin_delayed_give <item_id>, <delay_seconds>;
 // Demonstrates timer.add_timer + clif.progressbar.
 static int32_t buildin_plugin_delayed_give(script_state* st, void* /*user_data*/)
@@ -545,6 +602,13 @@ PLUGIN_API bool plugin_init(plugin_api_t* api)
 	api->script_addcommand("plugin_buff_str10",    "",    buildin_plugin_buff_str10,   nullptr);
 	api->script_addcommand("plugin_dialog_demo",   "",    buildin_plugin_dialog_demo,  nullptr);
 	api->script_addcommand("plugin_get_npc_menu",  "",    buildin_plugin_get_npc_menu, nullptr);
+	api->script_addcommand("plugin_hyper",         "i",   buildin_plugin_hyper,        nullptr);
+	api->script_addcommand("plugin_hyper_status",  "",    buildin_plugin_hyper_status, nullptr);
+
+	// Register the custom "Hyper" status change: affects STR + AGI, no
+	// client icon (pass an EFST_* value as the 3rd arg to show one).
+	g_hyper_sc = api->sc.register_sc("Hyper", PLUGIN_SCB_STR | PLUGIN_SCB_AGI,
+	                                 /*icon=*/0, hyper_sc_calc, nullptr);
 
 	// Install a fixed-length 6-byte handler for our custom inbound packet.
 	// Cleared automatically by plugin_manager_final on shutdown / reload.

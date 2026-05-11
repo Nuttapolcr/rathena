@@ -410,6 +410,49 @@ api->atcmd.register_cmd("myhello", /*level=*/0, on_atcmd_myhello, /*user_data=*/
 |---|---|
 | `open(sd)` | เปิดกล่องส่วนตัวของผู้เล่น |
 
+### `sc` — Plugin status changes
+
+ลงทะเบียน status effect แบบกำหนดเองที่เข้าร่วมการคำนวณ stat ใน
+`status.cpp`, พกพารามิเตอร์ได้ถึง 4 ตัว, หมดอายุตาม timer, และ
+แสดง client status icon ได้ (ถ้าต้องการ)
+
+| Function | หน้าที่ |
+|---|---|
+| `register_sc(name, calc_flag, icon, calc, user_data)` | นิยาม SC ใหม่; คืน id (หรือ -1) |
+| `start(bl, id, v1, v2, v3, v4, duration_ms)` | apply / refresh บน `bl` (`duration_ms<=0` = ถาวร) |
+| `end(bl, id)` | ลบออกจาก `bl` |
+| `active(bl, id, &v1, &v2, &v3, &v4)` | query; out pointer เป็น null ได้ |
+
+`calc_flag` คือ OR ของบิต `PLUGIN_SCB_*` — stat ที่ SC นี้กระทบ:
+`STR / AGI / VIT / INT / DEX / LUK / MAXHP / MAXSP / SPEED` บิตของ
+base stat จะ cascade อัตโนมัติ (SC ที่กระทบ STR ทำให้ engine
+คำนวณ batk/matk ใหม่ด้วย) ส่วน `icon` คือค่า `EFST_*` สำหรับ
+status bar ของ client หรือ 0 ถ้าไม่ใช้
+
+callback `calc` ทำงานหนึ่งครั้งต่อ stat ที่กระทบในตอน recalc:
+
+```cpp
+// calc_flag เป็น PLUGIN_SCB_STR | PLUGIN_SCB_AGI ดังนั้น callback นี้
+// ถูกเรียกตอน scb_kind == PLUGIN_SCB_STR และอีกครั้ง PLUGIN_SCB_AGI
+static int32_t my_sc_calc(block_list* bl, int32_t sc_id, int32_t scb_kind,
+                          int32_t cur_value, int32_t v1, int32_t v2,
+                          int32_t v3, int32_t v4, void* user_data) {
+    if (scb_kind == PLUGIN_SCB_STR || scb_kind == PLUGIN_SCB_AGI)
+        return cur_value + v1;       // +v1 ให้ STR กับ AGI
+    return cur_value;
+}
+
+// ใน plugin_init:
+int32_t my_sc = api->sc.register_sc("Hyper", PLUGIN_SCB_STR | PLUGIN_SCB_AGI,
+                                    /*icon=*/0, my_sc_calc, nullptr);
+
+// ภายหลัง — ให้ผู้เล่น +25 STR/AGI 30 วินาที:
+api->sc.start(api->pc.as_bl(sd), my_sc, /*v1=*/25, 0, 0, 0, 30 * 1000);
+```
+
+SC ที่ active จะถูกเคลียร์อัตโนมัติเมื่อ entity ถูกทำลาย (logout,
+mob ตาย, NPC reload) และตอน plugin ถูก unload
+
 ### `clif` — Packet สำเร็จรูป
 
 ฟังก์ชันส่ง packet สำเร็จรูปสำหรับ effect ทั่วไปที่ส่งให้ client
@@ -595,6 +638,31 @@ static void on_my_packet(int32_t fd, map_session_data* sd, void* /*user_data*/) 
 api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet, /*user_data=*/nullptr);
 ```
 
+### Custom status change
+
+```cpp
+// debuff ที่ลด SPEED ครึ่งหนึ่ง (ค่า speed คือ "ms ต่อช่อง" — มากคือช้า
+// — เลยใช้การคูณ)
+static int32_t slow_calc(block_list* bl, int32_t sc_id, int32_t scb_kind,
+                         int32_t cur, int32_t pct, int32_t, int32_t, int32_t,
+                         void* /*user_data*/) {
+    if (scb_kind == PLUGIN_SCB_SPEED)
+        return cur + cur * pct / 100;   // pct = 50  →  เดินช้าลง 50%
+    return cur;
+}
+
+// ใน plugin_init:
+int32_t sc_slow = api->sc.register_sc("Slow", PLUGIN_SCB_SPEED, 0, slow_calc, nullptr);
+
+// บน HOOK_MOB_KILL หรือที่ไหนก็ได้ที่อยากลงโทษใครสักคน:
+api->sc.start(target_bl, sc_slow, /*pct=*/50, 0, 0, 0, /*ms=*/10000);
+// ... และถ้าอยากปลดก่อนเวลา:
+api->sc.end(target_bl, sc_slow);
+```
+
+engine จะคำนวณ stat ที่กระทบใหม่ทั้งตอน SC เริ่มและตอนจบ ดังนั้น
+modifier จึงปรากฏและหายไปอย่างสะอาดโดยไม่ต้อง bookkeeping เพิ่ม
+
 ---
 
 ## Example Plugin
@@ -616,6 +684,7 @@ api->packet.register_handler(MY_PACKET, /*length=*/6, on_my_packet, /*user_data=
 | `plugin_inventory_report` | `pc.countitem` + `pc.read_param` + `script.set_var_num/get_var_num` |
 | `plugin_buff_str10` | `pc.bonus` |
 | `plugin_dialog_demo` + `plugin_get_npc_menu` | `clif.scriptmes/scriptmenu` + `script.suspend` + `pc.get_npc_menu` |
+| `plugin_hyper secs` + `plugin_hyper_status` | `sc.register_sc` + `sc.start` + `sc.active` (custom SC: +25 STR/AGI) |
 
 นอกจากนี้ยังลงทะเบียน handler สำหรับ packet `0x0CFE` ขาเข้าและส่ง
 reply กลับใน `0x0CFF`
