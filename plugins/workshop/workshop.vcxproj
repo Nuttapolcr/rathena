@@ -1,0 +1,263 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7D8E9F1A-3B2C-4D5E-9F0A-1B2C3D4E5F60}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>workshop</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <!-- Output .dll next to the source so conf/plugins.conf path works -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(SolutionDir)plugins\workshop\</OutDir>
+    <IntDir>$(SolutionDir).vs\build\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)plugins\workshop\</OutDir>
+    <IntDir>$(SolutionDir).vs\build\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(SolutionDir)plugins\workshop\</OutDir>
+    <IntDir>$(SolutionDir).vs\build\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)plugins\workshop\</OutDir>
+    <IntDir>$(SolutionDir).vs\build\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <!--
+    Common compile / link settings, mirrored across all four configs.
+    Workshop bundles Lua 5.4 and yaml-cpp source files directly so the
+    DLL has no third-party runtime dependency — matches the Linux
+    Makefile and keeps the plugin self-contained regardless of which
+    CRT yaml-cpp.lib was built with.
+  -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PrecompiledHeader></PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>WIN32;FD_SETSIZE=4096;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;YAML_CPP_STATIC_DEFINE;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)3rdparty\yaml-cpp\include;$(MSBuildThisFileDirectory)_deps\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalOptions>/ignore:4217 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PrecompiledHeader></PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>WIN32;FD_SETSIZE=4096;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;YAML_CPP_STATIC_DEFINE;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)3rdparty\yaml-cpp\include;$(MSBuildThisFileDirectory)_deps\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalOptions>/ignore:4217 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <PrecompiledHeader></PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;FD_SETSIZE=4096;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;YAML_CPP_STATIC_DEFINE;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)3rdparty\yaml-cpp\include;$(MSBuildThisFileDirectory)_deps\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalOptions>/ignore:4217 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PrecompiledHeader></PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;FD_SETSIZE=4096;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;YAML_CPP_STATIC_DEFINE;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)3rdparty\yaml-cpp\include;$(MSBuildThisFileDirectory)_deps\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalOptions>/ignore:4217 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- Plugin C++ sources -->
+  <ItemGroup>
+    <ClCompile Include="db_store.cpp" />
+    <ClCompile Include="lua_bridge.cpp" />
+    <ClCompile Include="lua_globals.cpp" />
+    <ClCompile Include="modloader.cpp" />
+    <ClCompile Include="workshop.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="db_store.hpp" />
+    <ClInclude Include="lua_bridge.hpp" />
+    <ClInclude Include="modloader.hpp" />
+    <ClInclude Include="workshop.hpp" />
+  </ItemGroup>
+  <!--
+    Lua 5.4 sources are downloaded into _deps\lua\src by fetch_lua.bat
+    (or fetch_lua.sh on POSIX). Each source listed individually so VS
+    only rebuilds the ones that changed.
+    Excluded: lua.c, luac.c — those are the standalone interpreter /
+    bytecode compiler drivers, not part of the embedded library.
+  -->
+  <ItemGroup>
+    <ClCompile Include="_deps\lua\src\lapi.c" />
+    <ClCompile Include="_deps\lua\src\lauxlib.c" />
+    <ClCompile Include="_deps\lua\src\lbaselib.c" />
+    <ClCompile Include="_deps\lua\src\lcode.c" />
+    <ClCompile Include="_deps\lua\src\lcorolib.c" />
+    <ClCompile Include="_deps\lua\src\lctype.c" />
+    <ClCompile Include="_deps\lua\src\ldblib.c" />
+    <ClCompile Include="_deps\lua\src\ldebug.c" />
+    <ClCompile Include="_deps\lua\src\ldo.c" />
+    <ClCompile Include="_deps\lua\src\ldump.c" />
+    <ClCompile Include="_deps\lua\src\lfunc.c" />
+    <ClCompile Include="_deps\lua\src\lgc.c" />
+    <ClCompile Include="_deps\lua\src\linit.c" />
+    <ClCompile Include="_deps\lua\src\liolib.c" />
+    <ClCompile Include="_deps\lua\src\llex.c" />
+    <ClCompile Include="_deps\lua\src\lmathlib.c" />
+    <ClCompile Include="_deps\lua\src\lmem.c" />
+    <ClCompile Include="_deps\lua\src\loadlib.c" />
+    <ClCompile Include="_deps\lua\src\lobject.c" />
+    <ClCompile Include="_deps\lua\src\lopcodes.c" />
+    <ClCompile Include="_deps\lua\src\loslib.c" />
+    <ClCompile Include="_deps\lua\src\lparser.c" />
+    <ClCompile Include="_deps\lua\src\lstate.c" />
+    <ClCompile Include="_deps\lua\src\lstring.c" />
+    <ClCompile Include="_deps\lua\src\lstrlib.c" />
+    <ClCompile Include="_deps\lua\src\ltable.c" />
+    <ClCompile Include="_deps\lua\src\ltablib.c" />
+    <ClCompile Include="_deps\lua\src\ltm.c" />
+    <ClCompile Include="_deps\lua\src\lundump.c" />
+    <ClCompile Include="_deps\lua\src\lutf8lib.c" />
+    <ClCompile Include="_deps\lua\src\lvm.c" />
+    <ClCompile Include="_deps\lua\src\lzio.c" />
+  </ItemGroup>
+  <!--
+    yaml-cpp sources are bundled directly (rather than linking
+    yaml-cpp.lib) so workshop.dll matches its own CRT and iterator
+    debug level without having to track those project-wide.
+  -->
+  <ItemGroup>
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\binary.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\contrib\graphbuilder.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\contrib\graphbuilderadapter.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\convert.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\depthguard.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\directives.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\emit.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\emitfromevents.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\emitter.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\emitterstate.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\emitterutils.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\exceptions.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\exp.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\memory.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\node.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\node_data.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\nodebuilder.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\nodeevents.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\null.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\ostream_wrapper.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\parse.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\parser.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\regex_yaml.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\scanner.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\scanscalar.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\scantag.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\scantoken.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\simplekey.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\singledocparser.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\stream.cpp" />
+    <ClCompile Include="..\..\3rdparty\yaml-cpp\src\tag.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

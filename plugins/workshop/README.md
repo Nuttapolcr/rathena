@@ -20,6 +20,18 @@ make plugin                 # จาก rAthena root
 make -C plugins/workshop    # build เฉพาะ workshop
 ```
 
+**Windows / Visual Studio:**
+
+```bat
+rem one-time, ใช้ tar + PowerShell ที่มากับ Windows 10 1803+
+plugins\workshop\fetch_lua.bat
+```
+
+จากนั้นเปิด `rAthena.sln` ใน Visual Studio — workshop project อยู่ใต้
+solution folder `plugins`. Build configuration ใด ๆ ก็ได้ (Debug/Release
+x86/x64) จะวาง `workshop.dll` ใน `plugins\workshop\` ให้พร้อมอ้างจาก
+`conf\plugins.conf`
+
 เปิดใน [conf/plugins.conf](../../conf/plugins.conf):
 
 ```
