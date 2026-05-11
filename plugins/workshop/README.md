@@ -533,10 +533,53 @@ end)
 `argspec`: `i` = int, `s` = string. Return value (number/string) ถูก
 push กลับเป็น script return
 
+### Client packet hooks
+
+```lua
+-- on_packet(cmd, fn): intercept an *existing* client packet before the
+-- engine's clif handler. ctx = { fd, cmd, player? }. Read the payload
+-- with packet_read_b/w/l/str(ctx.fd, offset) — offsets are from the
+-- 2-byte cmd word. Return false or "stop" to suppress the engine
+-- handler; nil / true lets it run as normal.
+on_packet(0x0090, function(ctx)                 -- "talk to NPC"
+    local npc_id = packet_read_l(ctx.fd, 2)
+    log_info('NPC click: npc_id=' .. npc_id)
+    -- return false                              -- would block it
+end)
+
+-- register_packet(cmd, length, fn): handle a previously-unused packet
+-- id (0x064..0xCFF — pick one your client build doesn't use). `length`
+-- is the fixed size in bytes incl. the 2-byte cmd, or -1 for
+-- variable-length packets (size read from offset 2).
+register_packet(0x0CFD, 2, function(ctx)
+    if ctx.player then message(ctx.player, 'pong!') end
+end)
+
+-- Read helpers (call inside on_packet / register_packet with ctx.fd):
+packet_read_b(fd, off)    packet_read_w(fd, off)    packet_read_l(fd, off)
+packet_read_str(fd, off)  packet_rest(fd)           -- bytes left in recv buf
+
+-- Send helpers — `bytes` is a Lua string holding the raw packet
+-- (cmd at offset 0..1):
+packet_send_self(fd, bytes)                 -- push to one fd
+packet_send(player|nil, bytes [, target])   -- clif_send; target:
+                                            -- 0=ALL_CLIENT 1=ALL_SAMEMAP
+                                            -- 2=AREA 3=AREA_WOS 24=SELF ...
+                                            -- player may be nil only for
+                                            -- target 0
+```
+
+One filter per cmd (re-registering swaps it); same for `register_packet`.
+On `workshop_reload` the old registrations go inert (the engine keeps
+them but the trampoline no-ops on the stale ref) and a re-run installs
+fresh ones. Hooking core gameplay packets is powerful but easy to break
+things with — start with log-only filters and a packet id you know your
+client uses.
+
 ### Reload (runtime)
 
 `workshop_reload;` — NPC script command ที่ shutdown Lua VM ครบรอบ
-(ปิด timer, ปลด refs ของ event/timer/hook), เปิดใหม่, รัน mod scripts
+(ปิด timer, ปลด refs ของ event/timer/hook/packet), เปิดใหม่, รัน mod scripts
 อีกครั้ง — buildin/atcmd ที่เคย register ไว้ engine ยังเรียกได้ ref ใหม่
 
 ## Patterns

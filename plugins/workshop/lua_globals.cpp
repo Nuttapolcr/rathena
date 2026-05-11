@@ -2136,6 +2136,151 @@ static int lw_db_types(lua_State* L) {
     return 1;
 }
 
+// ---- client packet hooks ----
+//
+// on_packet(cmd, fn)        — run `fn` before the engine's clif handler for
+//                             `cmd`; returning false / "stop" suppresses it.
+// register_packet(cmd, len, fn) — install a handler for an unused packet id.
+// packet_read_b/w/l/str(fd, off), packet_rest(fd) — read the incoming packet.
+// packet_send(player|nil, bytes, target), packet_send_self(fd, bytes) — send.
+//
+// The Lua function gets a ctx table: { fd, cmd, player? }. Use ctx.fd with
+// the packet_read_* helpers. Lua refs are carried to the engine as the
+// callback's user_data; re-registering a cmd swaps the bound function.
+
+static std::map<uint16_t, int> g_packet_filter_refs;
+static std::map<uint16_t, int> g_packet_handler_refs;
+
+static void push_packet_ctx(lua_State* L, int32_t fd, map_session_data* sd,
+                            uint16_t cmd) {
+    lua_newtable(L);
+    lua_pushinteger(L, fd);  lua_setfield(L, -2, "fd");
+    lua_pushinteger(L, cmd); lua_setfield(L, -2, "cmd");
+    if (sd) { push_player(L, sd); lua_setfield(L, -2, "player"); }
+}
+
+static int32_t packet_filter_trampoline(int32_t fd, map_session_data* sd,
+                                        void* user_data) {
+    int ref = (int)(intptr_t)user_data;
+    lua_State* L = L_get();
+    if (!L) return PLUGIN_PACKET_PASS;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return PLUGIN_PACKET_PASS; }
+    push_packet_ctx(L, fd, sd, g_api->packet.read_w(fd, 0));
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        wlog_warning("on_packet filter error: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return PLUGIN_PACKET_PASS;
+    }
+    bool stop = false;
+    if (lua_isboolean(L, -1))      stop = !lua_toboolean(L, -1);     // false -> stop
+    else if (lua_isstring(L, -1))  stop = strcmp(lua_tostring(L, -1), "stop") == 0;
+    // nil / true / number -> pass through to the engine handler
+    lua_pop(L, 1);
+    return stop ? PLUGIN_PACKET_STOP : PLUGIN_PACKET_PASS;
+}
+
+static void packet_handler_trampoline(int32_t fd, map_session_data* sd,
+                                      void* user_data) {
+    int ref = (int)(intptr_t)user_data;
+    lua_State* L = L_get();
+    if (!L) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return; }
+    push_packet_ctx(L, fd, sd, g_api->packet.read_w(fd, 0));
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        wlog_warning("register_packet handler error: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+}
+
+// on_packet(cmd, fn) -> bool
+static int lw_on_packet(lua_State* L) {
+    uint16_t cmd = (uint16_t)luaL_checkinteger(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int new_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    auto it = g_packet_filter_refs.find(cmd);
+    if (it != g_packet_filter_refs.end()) {
+        luaL_unref(L, LUA_REGISTRYINDEX, it->second);
+        it->second = new_ref;
+    } else {
+        g_packet_filter_refs[cmd] = new_ref;
+    }
+    bool ok = g_api->packet.register_filter(cmd, packet_filter_trampoline,
+                                            (void*)(intptr_t)new_ref);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+// register_packet(cmd, length, fn) -> bool   (length: bytes incl. cmd, or -1)
+static int lw_register_packet(lua_State* L) {
+    uint16_t cmd = (uint16_t)luaL_checkinteger(L, 1);
+    int16_t  len = (int16_t)luaL_checkinteger(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    lua_pushvalue(L, 3);
+    int new_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    auto it = g_packet_handler_refs.find(cmd);
+    if (it != g_packet_handler_refs.end()) {
+        luaL_unref(L, LUA_REGISTRYINDEX, it->second);
+        it->second = new_ref;
+    } else {
+        g_packet_handler_refs[cmd] = new_ref;
+    }
+    bool ok = g_api->packet.register_handler(cmd, len, packet_handler_trampoline,
+                                             (void*)(intptr_t)new_ref);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int lw_packet_read_b(lua_State* L) {
+    lua_pushinteger(L, g_api->packet.read_b((int32_t)luaL_checkinteger(L, 1),
+                                            (int32_t)luaL_checkinteger(L, 2)));
+    return 1;
+}
+static int lw_packet_read_w(lua_State* L) {
+    lua_pushinteger(L, g_api->packet.read_w((int32_t)luaL_checkinteger(L, 1),
+                                            (int32_t)luaL_checkinteger(L, 2)));
+    return 1;
+}
+static int lw_packet_read_l(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)g_api->packet.read_l((int32_t)luaL_checkinteger(L, 1),
+                                                         (int32_t)luaL_checkinteger(L, 2)));
+    return 1;
+}
+static int lw_packet_read_str(lua_State* L) {
+    const char* s = g_api->packet.read_str((int32_t)luaL_checkinteger(L, 1),
+                                           (int32_t)luaL_checkinteger(L, 2));
+    lua_pushstring(L, s ? s : "");
+    return 1;
+}
+static int lw_packet_rest(lua_State* L) {
+    lua_pushinteger(L, g_api->packet.read_rest((int32_t)luaL_checkinteger(L, 1)));
+    return 1;
+}
+
+// packet_send_self(fd, bytes) — push a raw packet (cmd at offset 0..1) to fd
+static int lw_packet_send_self(lua_State* L) {
+    int32_t fd = (int32_t)luaL_checkinteger(L, 1);
+    size_t  len = 0;
+    const char* data = luaL_checklstring(L, 2, &len);
+    g_api->packet.send_self(fd, data, (int32_t)len);
+    return 0;
+}
+
+// packet_send(player|nil, bytes [, target]) — clif_send via send_target.
+//   target: 0=ALL_CLIENT, 1=ALL_SAMEMAP, 2=AREA, 3=AREA_WOS, 24=SELF, ...
+//   player may be nil only when target == 0.
+static int lw_packet_send(lua_State* L) {
+    map_session_data* sd = lua_isnoneornil(L, 1) ? nullptr : sd_from_arg(L, 1);
+    size_t  len = 0;
+    const char* data = luaL_checklstring(L, 2, &len);
+    int32_t target = (int32_t)luaL_optinteger(L, 3, 0);
+    g_api->packet.send_target(sd ? g_api->pc.as_bl(sd) : nullptr,
+                              data, (int32_t)len, target);
+    return 0;
+}
+
 } // anonymous namespace
 
 namespace workshop {
@@ -2241,6 +2386,16 @@ void register_globals(lua_State* L) {
         {"db_count",            lw_db_count},
         {"db_each",             lw_db_each},
         {"db_types",            lw_db_types},
+        // -- client packet hooks --
+        {"on_packet",           lw_on_packet},
+        {"register_packet",     lw_register_packet},
+        {"packet_read_b",       lw_packet_read_b},
+        {"packet_read_w",       lw_packet_read_w},
+        {"packet_read_l",       lw_packet_read_l},
+        {"packet_read_str",     lw_packet_read_str},
+        {"packet_rest",         lw_packet_rest},
+        {"packet_send",         lw_packet_send},
+        {"packet_send_self",    lw_packet_send_self},
         {"timer_after",         lw_timer_after},
         {"sleep",               lw_sleep},
         {"script_suspend",      lw_script_suspend},
@@ -2317,6 +2472,8 @@ void stop_event_system() {
             luaL_unref(L, LUA_REGISTRYINDEX, kv.second->ref);
             kv.second->ref = LUA_NOREF;
         }
+        for (auto& kv : g_packet_filter_refs)  luaL_unref(L, LUA_REGISTRYINDEX, kv.second);
+        for (auto& kv : g_packet_handler_refs) luaL_unref(L, LUA_REGISTRYINDEX, kv.second);
     }
     g_event_handlers.clear();
     g_named_timers.clear();
@@ -2326,6 +2483,11 @@ void stop_event_system() {
     // callbacks reference Lua refs that vanish with the VM, so they go
     // inert; a reload that re-runs register_sc just adds fresh ones.
     g_plugin_sc_ids.clear();
+    // Likewise the engine keeps our packet filters/handlers registered with
+    // a now-stale ref as user_data; the trampolines no-op on that (the ref
+    // resolves to nil in the fresh VM). A reload re-registers cleanly.
+    g_packet_filter_refs.clear();
+    g_packet_handler_refs.clear();
 }
 
 } // namespace workshop

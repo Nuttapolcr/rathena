@@ -649,7 +649,30 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "if db_count('STATUS_DB') > 0 then\n"
         "    local s = db_get('STATUS_DB', 'Stone')\n"
         "    if s then log_status('STATUS_DB Stone -> ' .. tostring(s.DurationLookup)) end\n"
-        "end\n";
+        "end\n"
+        "\n"
+        "-- ----------------------------------------------------------------\n"
+        "-- Client packet hooks\n"
+        "-- ----------------------------------------------------------------\n"
+        "-- register_packet(cmd, length, fn): handle a previously-unused\n"
+        "-- packet id (cmd 0x064..0xCFF). `length` is the fixed size in\n"
+        "-- bytes incl. the 2-byte cmd, or -1 for variable length.\n"
+        "register_packet(0x0CFD, 2, function(ctx)\n"
+        "    log_info('got custom packet 0x0CFD from fd ' .. ctx.fd)\n"
+        "    if ctx.player then message(ctx.player, 'pong!') end\n"
+        "end)\n"
+        "\n"
+        "-- on_packet(cmd, fn): intercept an *existing* client packet before\n"
+        "-- the engine handles it. ctx = {fd, cmd, player?}; read the payload\n"
+        "-- with packet_read_b/w/l/str(ctx.fd, offset). Return false or 'stop'\n"
+        "-- to suppress the engine handler; nil/true lets it run.\n"
+        "--\n"
+        "-- Example (commented out — pick a packet id your client build uses):\n"
+        "-- on_packet(0x0090, function(ctx)            -- 'talk to NPC'\n"
+        "--     local npc_id = packet_read_l(ctx.fd, 2)\n"
+        "--     log_info('NPC click: npc_id=' .. npc_id)\n"
+        "--     -- return false   -- would block the interaction\n"
+        "-- end)\n";
     write_text(scripts + "/hello.lua", hello);
 
     wlog_status("scaffolded example mod at %s", ex.c_str());
