@@ -27,6 +27,11 @@ extern "C" {
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+// MSVC has localtime_s(tm*, time_t*) — swap args to match POSIX localtime_r
+static inline void localtime_r(const time_t* t, struct tm* out) { localtime_s(out, t); }
+#endif
+
 namespace {
 
 // ---- registry of Lua callbacks bound to plugin hooks / commands ----
