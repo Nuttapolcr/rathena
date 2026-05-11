@@ -4,6 +4,7 @@
 #include "plugin.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -40,6 +41,7 @@
 #include <common/timer.hpp>
 
 #include "atcommand.hpp"
+#include "battle.hpp"
 #include "clif.hpp"
 #include "homunculus.hpp"
 #include "itemdb.hpp"
@@ -636,6 +638,36 @@ static int32_t api_skill_use_id(map_session_data* sd, uint16_t skill_id,
 static int32_t api_storage_open(map_session_data* sd)
 {
 	return storage_storageopen(sd);
+}
+
+// ============================================================
+// Battle config wrappers
+// ============================================================
+
+static int32_t api_battle_get(const char* name)
+{
+	if (!name || !*name) return 0;
+	return battle_get_value(name);
+}
+
+static bool api_battle_set(const char* name, int32_t value)
+{
+	if (!name || !*name) return false;
+	char buf[16];
+	snprintf(buf, sizeof(buf), "%d", value);
+	return battle_set_value(name, buf) != 0;
+}
+
+static bool api_battle_has(const char* name)
+{
+	if (!name || !*name) return false;
+	// battle_get_value returns 0 for both "value is 0" and "unknown"; the
+	// only way to disambiguate is to attempt a no-op set, which returns 0
+	// for unknown names. We restore the original value if it existed.
+	int32_t cur = battle_get_value(name);
+	char buf[16];
+	snprintf(buf, sizeof(buf), "%d", cur);
+	return battle_set_value(name, buf) != 0;
 }
 
 // ============================================================
@@ -1257,6 +1289,13 @@ static plugin_api_t s_api = {
 		api_sc_start,
 		api_sc_end,
 		api_sc_active,
+	},
+
+	// battle sub-struct
+	{
+		api_battle_get,
+		api_battle_set,
+		api_battle_has,
 	},
 };
 

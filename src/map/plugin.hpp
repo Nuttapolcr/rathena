@@ -703,6 +703,25 @@ struct plugin_storage_api_t {
 	int32_t (*open)(struct map_session_data* sd);
 };
 
+// ---- Battle config ----
+// Read or override the conf/battle/*.conf settings at runtime. `name` is
+// the setting key as written in those files (e.g. "base_exp_rate",
+// "enable_pet_autofeed", "max_walk_speed").
+struct plugin_battle_api_t {
+	// Current integer value of `name`, or 0 if it isn't a known setting.
+	// Many booleans are stored as 0/1; use has() to tell "0" from "unknown".
+	int32_t (*get)(const char* name);
+
+	// Set `name` to `value`. The engine clamps to the setting's declared
+	// [min, max] (logging a warning and reverting to the default if out of
+	// range, mirroring battle_config_read). Returns true if `name` is a
+	// known setting. Changes are not written back to the .conf files.
+	bool (*set)(const char* name, int32_t value);
+
+	// True if `name` is a known battle setting.
+	bool (*has)(const char* name);
+};
+
 // ---- Clif (client packet) helpers ----
 // `target` values match enum send_target: ALL_CLIENT=0, ALL_SAMEMAP=1,
 // AREA=2, AREA_WOS=3, SELF=24, etc. See clif.hpp for the full list.
@@ -890,6 +909,7 @@ struct plugin_api_t {
 	struct plugin_log_api_t     log;
 	struct plugin_packet_api_t  packet;
 	struct plugin_sc_api_t      sc;
+	struct plugin_battle_api_t  battle;
 };
 
 // ---- Plugin metadata ----
