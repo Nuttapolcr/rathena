@@ -2,3 +2,6 @@
 # first run if the directory is missing; once it exists, contents are
 # the operator's domain — not part of the plugin source.
 mods/
+
+# _deps/ is fetched automatically by fetch_lua.bat / fetch_lua.sh — not committed.
+_deps/
