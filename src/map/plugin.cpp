@@ -112,6 +112,16 @@ struct PluginPacketEntry {
 };
 static std::unordered_map<uint16_t, PluginPacketEntry> plugin_packet_handlers;
 
+// Filters run from clif_parse() before the engine's own handler for a
+// cmd; returning PLUGIN_PACKET_STOP suppresses that handler. Stored
+// separately from handlers so a filter can sit in front of an existing
+// engine packet without replacing packet_db[cmd].func.
+struct PluginPacketFilter {
+	plugin_packet_filter_func func;
+	void*                     user_data;
+};
+static std::unordered_map<uint16_t, PluginPacketFilter> plugin_packet_filters;
+
 // ---- Plugin status changes ----
 // Definitions are indexed by the id returned from sc.register_sc().
 struct PluginSCDef {
@@ -862,6 +872,27 @@ static bool api_packet_unregister(uint16_t cmd)
 	return true;
 }
 
+static bool api_packet_register_filter(uint16_t cmd, plugin_packet_filter_func func,
+                                       void* user_data)
+{
+	if (!func) return false;
+	plugin_packet_filters[cmd] = { func, user_data };
+	return true;
+}
+
+static bool api_packet_unregister_filter(uint16_t cmd)
+{
+	return plugin_packet_filters.erase(cmd) > 0;
+}
+
+// Called from clif_parse() in clif.cpp before the engine's own handler.
+int32_t plugin_packet_filter(int32_t fd, uint16_t cmd, map_session_data* sd)
+{
+	auto it = plugin_packet_filters.find(cmd);
+	if (it == plugin_packet_filters.end()) return PLUGIN_PACKET_PASS;
+	return it->second.func(fd, sd, it->second.user_data);
+}
+
 static uint8_t  api_packet_read_b(int32_t fd, int32_t off) { return RFIFOB(fd, off); }
 static uint16_t api_packet_read_w(int32_t fd, int32_t off) { return RFIFOW(fd, off); }
 static uint32_t api_packet_read_l(int32_t fd, int32_t off) { return RFIFOL(fd, off); }
@@ -1209,6 +1240,8 @@ static plugin_api_t s_api = {
 	{
 		api_packet_register,
 		api_packet_unregister,
+		api_packet_register_filter,
+		api_packet_unregister_filter,
 		api_packet_read_b,
 		api_packet_read_w,
 		api_packet_read_l,
@@ -1388,6 +1421,7 @@ void plugin_manager_final(void)
 	for (auto& kv : plugin_packet_handlers)
 		packetdb_addpacket(kv.first, 0, nullptr, 0);
 	plugin_packet_handlers.clear();
+	plugin_packet_filters.clear();
 
 	// Cancel and drop all active plugin SC timers/instances.
 	for (auto& kv : plugin_sc_active)

@@ -25808,7 +25808,7 @@ static int32 clif_parse(int32 fd)
 		else
 		if( sd && sd->prev == nullptr && packet_db[cmd].func != clif_parse_LoadEndAck )
 			; //Only valid packet when player is not on a map
-		else
+		else if( plugin_packet_filter(fd, cmd, sd) != PLUGIN_PACKET_STOP )
 			packet_db[cmd].func(fd, sd);
 	}
 #ifdef DUMP_UNKNOWN_PACKET

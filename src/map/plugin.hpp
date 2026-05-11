@@ -375,6 +375,19 @@ typedef int32_t (*plugin_timer_func)(int32_t tid, int64_t tick,
 typedef void (*plugin_packet_func)(int32_t fd, struct map_session_data* sd,
                                    void* user_data);
 
+// Result of a packet filter: PASS lets the engine's own handler run
+// afterwards; STOP suppresses it (the plugin has consumed the packet).
+#define PLUGIN_PACKET_PASS 0
+#define PLUGIN_PACKET_STOP 1
+
+// Filter callback for an incoming client packet. Installed for any cmd
+// (including ones the engine already handles via clif_parse_*) and runs
+// *before* the engine handler. Use packet.read_b/w/l/str/rest to inspect
+// the payload (offsets from the cmd word). Return PLUGIN_PACKET_PASS or
+// PLUGIN_PACKET_STOP. `sd` may be null for pre-login packets.
+typedef int32_t (*plugin_packet_filter_func)(int32_t fd, struct map_session_data* sd,
+                                             void* user_data);
+
 // ---- Plugin status changes (SC) ----
 
 // Calc-flag bits: which stats a plugin SC influences. When the SC
@@ -818,7 +831,21 @@ struct plugin_packet_api_t {
 	// Drop a previously-registered handler.
 	bool (*unregister_handler)(uint16_t cmd);
 
-	// Read primitives from the incoming packet (within a handler).
+	// Install a *filter* for ANY incoming packet id — including ones the
+	// engine handles itself. The filter runs in clif_parse before the
+	// engine's handler; returning PLUGIN_PACKET_STOP suppresses that
+	// handler (the packet is otherwise still consumed/skipped from the
+	// buffer as normal). One filter per cmd; re-registering replaces it.
+	// `user_data` is forwarded to the filter unchanged.
+	//
+	// Like register_handler, install filters from plugin_init(); the
+	// plugin system clears them on plugin_final().
+	bool (*register_filter)(uint16_t cmd, plugin_packet_filter_func func, void* user_data);
+
+	// Drop a previously-registered filter.
+	bool (*unregister_filter)(uint16_t cmd);
+
+	// Read primitives from the incoming packet (within a handler or filter).
 	// `offset` is measured from the start of the packet (cmd at 0..1).
 	uint8_t     (*read_b)  (int32_t fd, int32_t offset);
 	uint16_t    (*read_w)  (int32_t fd, int32_t offset);
@@ -906,5 +933,10 @@ int32_t     plugin_status_calc(struct block_list* bl, int32_t scb_kind, int32_t 
 // Drop all active plugin SCs for `bl` (called from unit_free() so a
 // recycled block-list id does not inherit stale effects).
 void        plugin_sc_clear(struct block_list* bl);
+
+// Run the plugin filter (if any) registered for `cmd` before the engine's
+// own clif handler. Returns PLUGIN_PACKET_STOP when the engine handler
+// should be skipped. Called from clif_parse() in clif.cpp.
+int32_t     plugin_packet_filter(int32_t fd, uint16_t cmd, struct map_session_data* sd);
 
 #endif // MAP_PLUGIN_HPP
