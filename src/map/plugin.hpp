@@ -574,7 +574,7 @@ struct plugin_map_api_t {
 	int32_t (*get_mapflag)(int16_t m, int32_t flag);
 };
 
-// ---- Status (HP / SP manipulation) ----
+// ---- Status (HP / SP manipulation, status changes) ----
 struct plugin_status_api_t {
 	// flag: 1=no animation, 2=allow exceeding max
 	int32_t (*heal)  (struct block_list* bl, int64_t hp, int64_t sp, int32_t flag);
@@ -583,6 +583,37 @@ struct plugin_status_api_t {
 	int32_t (*damage)(struct block_list* src, struct block_list* target,
 	                  int64_t hp, int64_t sp, int64_t walkdelay,
 	                  int32_t flag, uint16_t skill_id);
+
+	// ---- Status changes (SC_*) ----
+	//
+	// `type` is an sc_type value. Pass a literal number or resolve a name
+	// via sc_id() below. `rate` is 0..10000 (10000 = always). `flag` is a
+	// bitmask of SCSTART_*: NOAVOID=0x01, NOTICKDEF=0x02, LOADED=0x04,
+	// NORATEDEF=0x08, NOICON=0x10; 0 for the usual behaviour.
+	// Returns true if the status was applied.
+	bool    (*change_start)(struct block_list* src, struct block_list* bl,
+	                        int32_t type, int32_t rate,
+	                        int32_t val1, int32_t val2, int32_t val3, int32_t val4,
+	                        int64_t duration_ms, int32_t flag);
+
+	// End one active status. Returns 1 if a status was actually removed.
+	int32_t (*change_end)(struct block_list* bl, int32_t type);
+
+	// Clear active statuses. type: 0 = everything (including permanent),
+	// 1 = the normal removable set (matches status_change_clear).
+	void    (*change_clear)(struct block_list* bl, int32_t type);
+
+	// True if `type` is currently active on `bl`.
+	bool    (*has_change)(struct block_list* bl, int32_t type);
+
+	// Read val1..val4 of an active status (`which` is 1..4). Returns 0 if
+	// the status isn't active or `which` is out of range.
+	int32_t (*change_val)(struct block_list* bl, int32_t type, int32_t which);
+
+	// Resolve an SC constant name to its sc_type value. Accepts the bare
+	// name ("FREEZE") or the full constant ("SC_FREEZE"). Returns SC_NONE
+	// (-1) if neither resolves.
+	int32_t (*sc_id)(const char* name);
 };
 
 // ---- Block list entity utilities ----
