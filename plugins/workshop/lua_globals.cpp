@@ -19,11 +19,13 @@ extern "C" {
 #include "lauxlib.h"
 }
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -220,9 +222,23 @@ static int lw_heal(lua_State* L) {
 }
 
 // ---- status changes (SC_*) ----
+//
+// Two kinds of SC are reachable from Lua:
+//   * engine built-ins  — SC_FREEZE etc., applied via g_api->status.change_*
+//   * plugin-defined SC — registered with register_sc(), applied via the
+//     g_api->sc.* table (own calc callback, own side table, timer-driven).
+// register_sc() returns an id that lands in g_plugin_sc_ids; the sc_*
+// wrappers below route on membership so callers use one set of functions
+// for both.
 
-// Resolve a Lua arg that's either a numeric sc_type or an SC name string.
-// Returns SC_NONE (-1) for an unrecognised string.
+static std::set<int32_t> g_plugin_sc_ids;
+
+static bool is_plugin_sc(int32_t id) {
+    return g_plugin_sc_ids.find(id) != g_plugin_sc_ids.end();
+}
+
+// Resolve a Lua arg that's either a numeric sc_type / plugin-SC id or an
+// SC name string. Returns SC_NONE (-1) for an unrecognised string.
 static int32_t sc_type_from_arg(lua_State* L, int idx) {
     if (lua_isinteger(L, idx) || lua_isnumber(L, idx))
         return (int32_t)lua_tointeger(L, idx);
@@ -238,8 +254,111 @@ static int lw_sc_id(lua_State* L) {
     return 1;
 }
 
+// ---- plugin-defined SC: register_sc + the calc trampoline ----
+
+// PLUGIN_SCB_* — which stats a plugin SC influences. Mirrors e_plugin_scb.
+static int32_t scb_flag_from_arg(lua_State* L, int idx) {
+    if (lua_isinteger(L, idx) || lua_isnumber(L, idx))
+        return (int32_t)lua_tointeger(L, idx);
+    int32_t flag = 0;
+    if (lua_istable(L, idx)) {
+        int n = (int)lua_rawlen(L, idx);
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, idx, i);
+            const char* s = lua_tostring(L, -1);
+            if (s) {
+                std::string up;
+                for (const char* p = s; *p; ++p)
+                    up += (char)std::toupper((unsigned char)*p);
+                if      (up == "STR")   flag |= PLUGIN_SCB_STR;
+                else if (up == "AGI")   flag |= PLUGIN_SCB_AGI;
+                else if (up == "VIT")   flag |= PLUGIN_SCB_VIT;
+                else if (up == "INT")   flag |= PLUGIN_SCB_INT;
+                else if (up == "DEX")   flag |= PLUGIN_SCB_DEX;
+                else if (up == "LUK")   flag |= PLUGIN_SCB_LUK;
+                else if (up == "MAXHP") flag |= PLUGIN_SCB_MAXHP;
+                else if (up == "MAXSP") flag |= PLUGIN_SCB_MAXSP;
+                else if (up == "SPEED") flag |= PLUGIN_SCB_SPEED;
+            }
+            lua_pop(L, 1);
+        }
+    }
+    return flag;
+}
+
+// Engine -> Lua bridge for a registered plugin SC's calc callback. The
+// luaL_ref of the Lua function is carried as `user_data`. Invoked once
+// per affected stat during status recalculation; the Lua side returns
+// the new value for `cur_value`.
+static int32_t plugin_sc_calc_trampoline(block_list* bl, int32_t sc_id,
+                                         int32_t scb_kind, int32_t cur_value,
+                                         int32_t v1, int32_t v2,
+                                         int32_t v3, int32_t v4,
+                                         void* user_data) {
+    int ref = (int)(intptr_t)user_data;
+    lua_State* L = L_get();
+    if (!L) return cur_value;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return cur_value; }
+
+    lua_newtable(L);
+    lua_pushinteger(L, sc_id);     lua_setfield(L, -2, "sc_id");
+    lua_pushinteger(L, scb_kind);  lua_setfield(L, -2, "stat");  // a PLUGIN_SCB_* bit
+    lua_pushinteger(L, cur_value); lua_setfield(L, -2, "cur");
+    lua_pushinteger(L, v1);        lua_setfield(L, -2, "val1");
+    lua_pushinteger(L, v2);        lua_setfield(L, -2, "val2");
+    lua_pushinteger(L, v3);        lua_setfield(L, -2, "val3");
+    lua_pushinteger(L, v4);        lua_setfield(L, -2, "val4");
+    if (g_api->bl.get_type(bl) == PLUGIN_BL_PC) {
+        if (map_session_data* sd = g_api->bl.as_sd(bl)) {
+            push_player(L, sd);
+            lua_setfield(L, -2, "player");
+        }
+    }
+
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        wlog_warning("register_sc calc error: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return cur_value;
+    }
+    int32_t result = (lua_isinteger(L, -1) || lua_isnumber(L, -1))
+        ? (int32_t)lua_tointeger(L, -1) : cur_value;
+    lua_pop(L, 1);
+    return result;
+}
+
+// register_sc("name", calc_flag, fn [, icon]) -> sc id (>=0) or -1
+//   calc_flag — an int bitmask OR a table of stat names:
+//               {'STR','AGI','VIT','INT','DEX','LUK','MAXHP','MAXSP','SPEED'}
+//   fn(ctx)   — called per affected stat; ctx = {player?, sc_id, stat,
+//               cur, val1..val4}; return the new value for ctx.cur.
+//   icon      — optional EFST_* status-bar icon (0 = none).
+static int lw_register_sc(lua_State* L) {
+    const char* name  = luaL_checkstring(L, 1);
+    int32_t calc_flag = scb_flag_from_arg(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    int32_t icon = (int32_t)luaL_optinteger(L, 4, 0);
+
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    int32_t id = g_api->sc.register_sc(name, calc_flag, icon,
+                                       plugin_sc_calc_trampoline,
+                                       (void*)(intptr_t)ref);
+    if (id >= 0) {
+        g_plugin_sc_ids.insert(id);
+    } else {
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    }
+    lua_pushinteger(L, id);
+    return 1;
+}
+
 // sc_start(player, type, duration_ms [, val1, val2, val3, val4 [, flag]]) -> bool
-//   type is a number or an SC name; rate is always 100% from Lua.
+//   type is a number, an SC name, or a register_sc() id. For engine SCs
+//   the rate is always 100% from Lua and `flag` is a SCSTART_* bitmask;
+//   for plugin SCs `flag` is ignored and duration <= 0 means permanent.
 static int lw_sc_start(lua_State* L) {
     map_session_data* sd = sd_from_arg(L, 1);
     if (!sd) { lua_pushboolean(L, 0); return 1; }
@@ -249,16 +368,22 @@ static int lw_sc_start(lua_State* L) {
     int32_t v2   = (int32_t)luaL_optinteger(L, 5, 0);
     int32_t v3   = (int32_t)luaL_optinteger(L, 6, 0);
     int32_t v4   = (int32_t)luaL_optinteger(L, 7, 0);
-    int32_t flag = (int32_t)luaL_optinteger(L, 8, 0);
-    bool ok = g_api->status.change_start(nullptr, g_api->pc.as_bl(sd),
-                                          type, 10000, v1, v2, v3, v4,
-                                          dur, flag);
+    bool ok;
+    if (is_plugin_sc(type)) {
+        ok = g_api->sc.start(g_api->pc.as_bl(sd), type, v1, v2, v3, v4, dur);
+    } else {
+        int32_t flag = (int32_t)luaL_optinteger(L, 8, 0);
+        ok = g_api->status.change_start(nullptr, g_api->pc.as_bl(sd),
+                                        type, 10000, v1, v2, v3, v4,
+                                        dur, flag);
+    }
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
 // sc_start_from(src_player, target_player, type, duration_ms [, v1..v4 [, flag]])
-//   like sc_start but attributes the status to a source (affects some SCs).
+//   like sc_start but attributes an engine SC to a source. Plugin SCs
+//   have no source channel, so this falls back to a plain start for them.
 static int lw_sc_start_from(lua_State* L) {
     map_session_data* src = lua_isnoneornil(L, 1) ? nullptr : sd_from_arg(L, 1);
     map_session_data* tgt = sd_from_arg(L, 2);
@@ -269,11 +394,16 @@ static int lw_sc_start_from(lua_State* L) {
     int32_t v2   = (int32_t)luaL_optinteger(L, 6, 0);
     int32_t v3   = (int32_t)luaL_optinteger(L, 7, 0);
     int32_t v4   = (int32_t)luaL_optinteger(L, 8, 0);
-    int32_t flag = (int32_t)luaL_optinteger(L, 9, 0);
-    bool ok = g_api->status.change_start(src ? g_api->pc.as_bl(src) : nullptr,
-                                          g_api->pc.as_bl(tgt),
-                                          type, 10000, v1, v2, v3, v4,
-                                          dur, flag);
+    bool ok;
+    if (is_plugin_sc(type)) {
+        ok = g_api->sc.start(g_api->pc.as_bl(tgt), type, v1, v2, v3, v4, dur);
+    } else {
+        int32_t flag = (int32_t)luaL_optinteger(L, 9, 0);
+        ok = g_api->status.change_start(src ? g_api->pc.as_bl(src) : nullptr,
+                                        g_api->pc.as_bl(tgt),
+                                        type, 10000, v1, v2, v3, v4,
+                                        dur, flag);
+    }
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
@@ -283,11 +413,16 @@ static int lw_sc_end(lua_State* L) {
     map_session_data* sd = sd_from_arg(L, 1);
     if (!sd) { lua_pushinteger(L, 0); return 1; }
     int32_t type = sc_type_from_arg(L, 2);
-    lua_pushinteger(L, g_api->status.change_end(g_api->pc.as_bl(sd), type));
+    if (is_plugin_sc(type)) {
+        lua_pushinteger(L, g_api->sc.end(g_api->pc.as_bl(sd), type) ? 1 : 0);
+    } else {
+        lua_pushinteger(L, g_api->status.change_end(g_api->pc.as_bl(sd), type));
+    }
     return 1;
 }
 
-// sc_clear(player [, all]) — all=true wipes even permanent statuses
+// sc_clear(player [, all]) — all=true wipes even permanent engine statuses.
+// (Plugin SCs are cleared per-id with sc_end; there's no bulk clear.)
 static int lw_sc_clear(lua_State* L) {
     map_session_data* sd = sd_from_arg(L, 1);
     if (!sd) return 0;
@@ -301,7 +436,10 @@ static int lw_sc_active(lua_State* L) {
     map_session_data* sd = sd_from_arg(L, 1);
     if (!sd) { lua_pushboolean(L, 0); return 1; }
     int32_t type = sc_type_from_arg(L, 2);
-    lua_pushboolean(L, g_api->status.has_change(g_api->pc.as_bl(sd), type) ? 1 : 0);
+    bool active = is_plugin_sc(type)
+        ? g_api->sc.active(g_api->pc.as_bl(sd), type, nullptr, nullptr, nullptr, nullptr)
+        : g_api->status.has_change(g_api->pc.as_bl(sd), type);
+    lua_pushboolean(L, active ? 1 : 0);
     return 1;
 }
 
@@ -311,7 +449,17 @@ static int lw_sc_val(lua_State* L) {
     if (!sd) { lua_pushinteger(L, 0); return 1; }
     int32_t type  = sc_type_from_arg(L, 2);
     int32_t which = (int32_t)luaL_checkinteger(L, 3);
-    lua_pushinteger(L, g_api->status.change_val(g_api->pc.as_bl(sd), type, which));
+    if (is_plugin_sc(type)) {
+        int32_t v[4] = {0, 0, 0, 0};
+        if (which >= 1 && which <= 4 &&
+            g_api->sc.active(g_api->pc.as_bl(sd), type, &v[0], &v[1], &v[2], &v[3])) {
+            lua_pushinteger(L, v[which - 1]);
+        } else {
+            lua_pushinteger(L, 0);
+        }
+    } else {
+        lua_pushinteger(L, g_api->status.change_val(g_api->pc.as_bl(sd), type, which));
+    }
     return 1;
 }
 
@@ -2008,6 +2156,7 @@ void register_globals(lua_State* L) {
         {"heal",                lw_heal},
         // -- status changes --
         {"sc_id",               lw_sc_id},
+        {"register_sc",         lw_register_sc},
         {"sc_start",            lw_sc_start},
         {"sc_start_from",       lw_sc_start_from},
         {"sc_end",              lw_sc_end},
@@ -2172,6 +2321,11 @@ void stop_event_system() {
     g_event_handlers.clear();
     g_named_timers.clear();
     g_hook_callbacks.clear();
+    // Drop our knowledge of registered plugin SC ids. The engine-side
+    // PluginSCDef entries persist (no unregister API), but their calc
+    // callbacks reference Lua refs that vanish with the VM, so they go
+    // inert; a reload that re-runs register_sc just adds fresh ones.
+    g_plugin_sc_ids.clear();
 }
 
 } // namespace workshop

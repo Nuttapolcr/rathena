@@ -291,6 +291,40 @@ sc_active(player, type)               -- → bool
 sc_val   (player, type, which)        -- val1..val4 of an active SC (which 1..4)
 ```
 
+#### Custom status changes — `register_sc`
+
+Define a brand-new SC that the engine recalculates the way a built-in one
+does. `register_sc` returns an id; every `sc_*` wrapper above accepts it
+exactly like an engine `sc_type` (workshop routes on the id). For plugin
+SCs `sc_start`'s `flag` arg is ignored and a duration `<= 0` means
+permanent.
+
+```lua
+-- register_sc(name, calc_flag, calc_fn [, icon]) -> id (>=0) or -1
+--   calc_flag — bitmask, or a table of stat names:
+--               'STR' 'AGI' 'VIT' 'INT' 'DEX' 'LUK' 'MAXHP' 'MAXSP' 'SPEED'
+--   calc_fn(ctx) — runs once per affected stat during status recalc;
+--                  ctx = { player?, sc_id, stat (a PLUGIN_SCB_* bit),
+--                          cur (value so far), val1..val4 }
+--                  return the new value for ctx.cur.
+--   icon — optional EFST_* status-bar icon (0 = none)
+
+HYPER = register_sc('Workshop_Hyper', {'STR', 'AGI'}, function(ctx)
+    return ctx.cur + (ctx.val1 or 0)        -- +val1 to STR and AGI
+end)
+
+sc_start(player, HYPER, 30000, 25)          -- +25 STR/AGI for 30s
+sc_active(player, HYPER)                     -- → bool
+sc_val(player, HYPER, 1)                     -- → 25
+sc_end(player, HYPER)
+```
+
+Base-stat flags cascade — a STR-affecting SC also makes the engine
+recompute batk/matk/etc. `register_sc` is a load-time call; on
+`workshop_reload` the previous registrations go inert (their calc
+callbacks die with the old Lua VM) and re-running the mod registers
+fresh ones — a small engine-side leak, harmless in practice.
+
 ### World / map
 
 ```lua
