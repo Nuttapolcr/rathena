@@ -7,14 +7,13 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <dirent.h>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <set>
 #include <sstream>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <system_error>
 
 namespace workshop {
 
@@ -26,25 +25,23 @@ ModLoader& ModLoader::instance() {
 // ---- helpers ----
 
 static bool dir_exists(const std::string& p) {
-    struct stat st{};
-    return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    std::error_code ec;
+    return std::filesystem::is_directory(p, ec);
 }
 
 static bool file_exists(const std::string& p) {
-    struct stat st{};
-    return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    std::error_code ec;
+    return std::filesystem::is_regular_file(p, ec);
 }
 
 static std::vector<std::string> list_subdirs(const std::string& dir) {
     std::vector<std::string> out;
-    DIR* d = opendir(dir.c_str());
-    if (!d) return out;
-    while (auto* ent = readdir(d)) {
-        if (ent->d_name[0] == '.') continue;
-        std::string full = dir + "/" + ent->d_name;
-        if (dir_exists(full)) out.push_back(ent->d_name);
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        std::string name = entry.path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
+        if (entry.is_directory(ec)) out.push_back(std::move(name));
     }
-    closedir(d);
     std::sort(out.begin(), out.end());
     return out;
 }
@@ -316,11 +313,12 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
     std::string ex = mods_dir + "/example";
     if (dir_exists(ex)) return false;
 
-    if (mkdir(ex.c_str(), 0755) != 0) return false;
+    std::error_code ec;
+    if (!std::filesystem::create_directories(ex, ec)) return false;
     std::string scripts = ex + "/scripts";
-    mkdir(scripts.c_str(), 0755);
+    std::filesystem::create_directories(scripts, ec);
     std::string db_dir = ex + "/db";
-    mkdir(db_dir.c_str(), 0755);
+    std::filesystem::create_directories(db_dir, ec);
 
     std::string modinfo =
         "# modinfo.yml — describes a workshop mod.\n"
@@ -367,7 +365,7 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
     write_text(ex + "/modinfo.yml", modinfo);
 
     std::string npc_dir = ex + "/npc";
-    mkdir(npc_dir.c_str(), 0755);
+    std::filesystem::create_directories(npc_dir, ec);
     std::string example_npc =
         "// example/npc/example_npc.txt — classic rAthena NPC script,\n"
         "// queued for the engine via modinfo.yml's rathena_scripts.\n"

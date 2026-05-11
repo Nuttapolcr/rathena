@@ -17,10 +17,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
+#include <system_error>
 
 plugin_api_t* g_api = nullptr;
 
@@ -42,13 +41,14 @@ const char* workshop_root() { return g_root.c_str(); }
 const char* workshop_mods_dir() { return g_mods.c_str(); }
 
 static bool dir_exists(const std::string& p) {
-    struct stat st{};
-    return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    std::error_code ec;
+    return std::filesystem::is_directory(p, ec);
 }
 
 static bool ensure_dir(const std::string& p) {
     if (dir_exists(p)) return true;
-    return mkdir(p.c_str(), 0755) == 0;
+    std::error_code ec;
+    return std::filesystem::create_directories(p, ec);
 }
 
 // ---- logging ----------------------------------------------------------

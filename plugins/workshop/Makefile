@@ -40,7 +40,7 @@ CXXFLAGS   := $(CXXFLAGS_COMMON) $(DEPFLAGS) -std=c++17 -I$(SRC_DIR) -I$(LUA_SRC
               -I$(YAML_SRC)/include -DYAML_CPP_STATIC_DEFINE
 CFLAGS     := $(CXXFLAGS_COMMON) $(DEPFLAGS) -DLUA_USE_LINUX -DLUA_USE_DLOPEN
 
-LDFLAGS    := -shared -ldl -lm -lpthread
+LDFLAGS    := -shared -ldl -lm -lpthread -lstdc++fs
 
 PLUGIN_DEP := $(PLUGIN_OBJ:.o=.d)
 LUA_DEP    := $(LUA_OBJ:.o=.d)
