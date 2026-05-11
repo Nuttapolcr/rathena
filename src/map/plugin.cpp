@@ -456,6 +456,75 @@ static int32_t api_status_damage(block_list* src, block_list* target,
 	                     static_cast<t_tick>(walkdelay), flag, skill_id);
 }
 
+static inline bool sc_type_in_range(int32_t type)
+{
+	return type > SC_NONE && type < SC_MAX;
+}
+
+static bool api_status_change_start(block_list* src, block_list* bl,
+                                    int32_t type, int32_t rate,
+                                    int32_t val1, int32_t val2,
+                                    int32_t val3, int32_t val4,
+                                    int64_t duration_ms, int32_t flag)
+{
+	if (!bl || !sc_type_in_range(type))
+		return false;
+	return status_change_start(src, bl, static_cast<sc_type>(type), rate,
+	                           val1, val2, val3, val4,
+	                           static_cast<t_tick>(duration_ms),
+	                           static_cast<uint8>(flag));
+}
+
+static int32_t api_status_change_end(block_list* bl, int32_t type)
+{
+	if (!bl || !sc_type_in_range(type))
+		return 0;
+	return status_change_end(bl, static_cast<sc_type>(type));
+}
+
+static void api_status_change_clear(block_list* bl, int32_t type)
+{
+	if (!bl) return;
+	status_change_clear(bl, type);
+}
+
+static bool api_status_has_change(block_list* bl, int32_t type)
+{
+	if (!bl || !sc_type_in_range(type))
+		return false;
+	status_change* sc = status_get_sc(bl);
+	return sc && sc->getSCE(static_cast<sc_type>(type)) != nullptr;
+}
+
+static int32_t api_status_change_val(block_list* bl, int32_t type, int32_t which)
+{
+	if (!bl || !sc_type_in_range(type) || which < 1 || which > 4)
+		return 0;
+	status_change* sc = status_get_sc(bl);
+	if (!sc) return 0;
+	const status_change_entry* sce = sc->getSCE(static_cast<sc_type>(type));
+	if (!sce) return 0;
+	switch (which) {
+		case 1: return sce->val1;
+		case 2: return sce->val2;
+		case 3: return sce->val3;
+		case 4: return sce->val4;
+	}
+	return 0;
+}
+
+static int32_t api_status_sc_id(const char* name)
+{
+	if (!name || !*name) return SC_NONE;
+	int64 v = 0;
+	if (script_get_constant(name, &v))
+		return static_cast<int32_t>(v);
+	std::string prefixed = std::string("SC_") + name;
+	if (script_get_constant(prefixed.c_str(), &v))
+		return static_cast<int32_t>(v);
+	return SC_NONE;
+}
+
 // ============================================================
 // Block list API wrappers
 // ============================================================
@@ -1045,6 +1114,12 @@ static plugin_api_t s_api = {
 	{
 		api_status_heal,
 		api_status_damage,
+		api_status_change_start,
+		api_status_change_end,
+		api_status_change_clear,
+		api_status_has_change,
+		api_status_change_val,
+		api_status_sc_id,
 	},
 
 	// bl sub-struct
