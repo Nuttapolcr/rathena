@@ -672,7 +672,27 @@ bool scaffold_mods_dir(const std::string& mods_dir) {
         "--     local npc_id = packet_read_l(ctx.fd, 2)\n"
         "--     log_info('NPC click: npc_id=' .. npc_id)\n"
         "--     -- return false   -- would block the interaction\n"
-        "-- end)\n";
+        "-- end)\n"
+        "\n"
+        "-- ----------------------------------------------------------------\n"
+        "-- Battle config (conf/battle/*.conf) at runtime\n"
+        "-- ----------------------------------------------------------------\n"
+        "log_status('base_exp_rate = ' .. battle_get('base_exp_rate'))\n"
+        "\n"
+        "-- @setrate [pct]  -> set base & job EXP rate (no arg = report)\n"
+        "register_atcmd('setrate', 99, function(player, args)\n"
+        "    local r = tonumber(args)\n"
+        "    if not r then\n"
+        "        if player then\n"
+        "            message(player, 'base_exp_rate = ' .. battle_get('base_exp_rate'))\n"
+        "        end\n"
+        "        return 1\n"
+        "    end\n"
+        "    battle_set('base_exp_rate', r)\n"
+        "    battle_set('job_exp_rate', r)\n"
+        "    if player then message(player, 'EXP rate -> ' .. r .. '%') end\n"
+        "    return 1\n"
+        "end)\n";
     write_text(scripts + "/hello.lua", hello);
 
     wlog_status("scaffolded example mod at %s", ex.c_str());

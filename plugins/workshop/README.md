@@ -370,6 +370,20 @@ quest_status(player, quest_id, status)   -- 0=Q_INACTIVE 1=Q_ACTIVE 2=Q_COMPLETE
 quest_check (player, quest_id [, type])  -- 0=HAVEQUEST 1=PLAYTIME 2=HUNTING
 ```
 
+### Battle config (conf/battle/*.conf)
+
+Read or override any `conf/battle/*.conf` setting at runtime by its key
+(`base_exp_rate`, `enable_pet_autofeed`, `max_walk_speed`, …). The engine
+clamps a set value to the setting's declared `[min, max]`; changes are
+not written back to the `.conf` files.
+
+```lua
+battle_get('base_exp_rate')          -- → int (0 if the name is unknown)
+battle_has('base_exp_rate')          -- → bool (tells "0" from "unknown")
+battle_set('base_exp_rate', 200)     -- → bool; value: number or boolean
+battle_set('enable_pet_autofeed', true)
+```
+
 ### NPC dialog
 
 `mes()` ส่ง dialog line ไม่ block — เก็บไว้หลายบรรทัดได้ จากนั้นเรียก

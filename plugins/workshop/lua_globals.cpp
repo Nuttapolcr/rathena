@@ -647,6 +647,37 @@ static int lw_skill_inf(lua_State* L) {
     return 1;
 }
 
+// ---- battle config (conf/battle/*.conf) ----
+
+// battle_get("base_exp_rate") -> int (0 if the name is unknown — use
+// battle_has to disambiguate from a setting that is genuinely 0)
+static int lw_battle_get(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    lua_pushinteger(L, g_api->battle.get(name));
+    return 1;
+}
+
+// battle_set("base_exp_rate", value) -> bool
+//   value may be a number or a boolean (true -> 1, false -> 0). The engine
+//   clamps to the setting's declared [min, max]. Not persisted to .conf.
+static int lw_battle_set(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    int32_t value;
+    if (lua_isboolean(L, 2))
+        value = lua_toboolean(L, 2) ? 1 : 0;
+    else
+        value = (int32_t)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, g_api->battle.set(name, value) ? 1 : 0);
+    return 1;
+}
+
+// battle_has("base_exp_rate") -> bool
+static int lw_battle_has(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    lua_pushboolean(L, g_api->battle.has(name) ? 1 : 0);
+    return 1;
+}
+
 // ---- map ----
 
 // mapindex("prontera") -> uint16
@@ -2329,6 +2360,10 @@ void register_globals(lua_State* L) {
         {"get_skill_lv",        lw_get_skill_lv},
         {"skill_id",            lw_skill_id},
         {"skill_inf",           lw_skill_inf},
+        // -- battle config --
+        {"battle_get",          lw_battle_get},
+        {"battle_set",          lw_battle_set},
+        {"battle_has",          lw_battle_has},
         // -- map --
         {"mapindex",            lw_mapindex},
         {"mapname",             lw_mapname},
