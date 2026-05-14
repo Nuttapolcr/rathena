@@ -30,6 +30,7 @@
 #include "pc.hpp"
 #include "pc_groups.hpp"
 #include "pet.hpp"
+#include "plugin.hpp"
 #include "script.hpp" // script_config
 #include "storage.hpp"
 
@@ -556,12 +557,18 @@ void chrif_on_ready(void) {
 	guild_castle_reconnect(-1, CD_NONE, 0);
 	
 	// Charserver is ready for loading autotrader
+	bool first_connect = !char_init_done;
 	if (!char_init_done)
 	{
 		do_init_buyingstore_autotrade();
 		do_init_vending_autotrade();
 		char_init_done = true;
 	}
+
+	// Let plugins re-apply anything the char-server resends/overwrites on a
+	// (re)connect — e.g. runtime storage definitions (see storage.define).
+	plugin_intif_connected_t hook_data = { first_connect };
+	plugin_hook_fire(HOOK_INTIF_CONNECTED, &hook_data);
 }
 
 

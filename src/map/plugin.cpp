@@ -45,6 +45,7 @@
 #include "clif.hpp"
 #include "homunculus.hpp"
 #include "itemdb.hpp"
+#include "mail.hpp"
 #include "map.hpp"
 #include "mob.hpp"
 #include "npc.hpp"
@@ -637,7 +638,96 @@ static int32_t api_skill_use_id(map_session_data* sd, uint16_t skill_id,
 
 static int32_t api_storage_open(map_session_data* sd)
 {
+	if (!sd) return 1;
 	return storage_storageopen(sd);
+}
+
+static int32_t api_storage_open_guild(map_session_data* sd)
+{
+	if (!sd) return 1;
+	return storage_guild_storageopen(sd);
+}
+
+static bool api_storage_open_premium(map_session_data* sd, int32_t storage_id, int32_t mode)
+{
+	if (!sd || storage_id < 0 || storage_id > UINT8_MAX)
+		return false;
+	if (!storage_exists(static_cast<uint8>(storage_id)))
+		return false;
+	if (mode < STOR_MODE_NONE || mode > STOR_MODE_ALL)
+		mode = STOR_MODE_ALL;
+	return storage_premiumStorage_load(sd, static_cast<uint8>(storage_id),
+	                                   static_cast<uint8>(mode));
+}
+
+static bool api_storage_exists(int32_t storage_id)
+{
+	if (storage_id < 0 || storage_id > UINT8_MAX)
+		return false;
+	return storage_exists(static_cast<uint8>(storage_id));
+}
+
+static bool api_storage_define(int32_t id, const char* name,
+                               const char* sql_table, int32_t max_num)
+{
+	if (id < 0 || id > UINT8_MAX || !name || !*name)
+		return false;
+
+	auto it = storage_db.find(static_cast<uint16>(id));
+	std::shared_ptr<s_storage_table> tbl =
+		(it != storage_db.end() && it->second) ? it->second
+		                                       : std::make_shared<s_storage_table>();
+
+	if (it == storage_db.end() || !it->second) {
+		std::memset(tbl.get(), 0, sizeof(s_storage_table));
+		tbl->id      = static_cast<uint8>(id);
+		tbl->max_num = MAX_STORAGE;
+		// Reuse the standard `storage` table so an id taken from storage.yml
+		// still resolves even when the caller doesn't pass sql_table.
+		std::snprintf(tbl->table, sizeof(tbl->table), "%s", "storage");
+	}
+
+	std::snprintf(tbl->name, sizeof(tbl->name), "%s", name);
+	if (sql_table && *sql_table)
+		std::snprintf(tbl->table, sizeof(tbl->table), "%s", sql_table);
+	if (max_num > 0)
+		tbl->max_num = static_cast<uint16>(max_num > MAX_STORAGE ? MAX_STORAGE : max_num);
+
+	storage_db[static_cast<uint16>(id)] = tbl;
+	return true;
+}
+
+static const char* api_storage_get_name(int32_t id)
+{
+	if (id < 0 || id > UINT8_MAX)
+		return "Storage";
+	return storage_getName(static_cast<uint8>(id));
+}
+
+// ============================================================
+// Client UI window wrappers
+// ============================================================
+
+static void api_ui_open(map_session_data* sd, int32_t ui_type, int32_t data)
+{
+	if (!sd) return;
+	clif_ui_open(*sd, static_cast<out_ui_type>(ui_type), data);
+}
+
+static void api_ui_dressroom(map_session_data* sd)
+{
+	if (sd) clif_dressing_room(*sd);
+}
+
+static void api_ui_roulette(map_session_data* sd)
+{
+	if (sd && battle_config.feature_roulette)
+		clif_roulette_open(sd);
+}
+
+static void api_ui_mail(map_session_data* sd)
+{
+	if (sd) mail_openmail(sd);
 }
 
 // ============================================================
@@ -1231,6 +1321,19 @@ static plugin_api_t s_api = {
 	// storage sub-struct
 	{
 		api_storage_open,
+		api_storage_open_guild,
+		api_storage_open_premium,
+		api_storage_exists,
+		api_storage_define,
+		api_storage_get_name,
+	},
+
+	// ui sub-struct
+	{
+		api_ui_open,
+		api_ui_dressroom,
+		api_ui_roulette,
+		api_ui_mail,
 	},
 
 	// clif sub-struct
