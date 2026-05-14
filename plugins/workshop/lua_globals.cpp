@@ -80,6 +80,13 @@ struct BuildinCoro {
 
 static thread_local BuildinCoro* g_active_coro = nullptr;
 
+// ---- packet writer userdata ----
+
+struct PacketWriterUD {
+    std::vector<uint8_t> buf;
+};
+static const char* PACKET_WRITER_MT = "rathena.PacketWriter";
+
 // ---- helpers ----
 
 static lua_State* L_get() { return workshop::LuaBridge::instance().L(); }
@@ -2416,6 +2423,174 @@ static int lw_packet_rest(lua_State* L) {
     return 1;
 }
 
+// ---- PacketWriter methods ----
+
+// packet_writer() — create new PacketWriter userdata
+static int lw_packet_writer_new(lua_State* L) {
+    PacketWriterUD* w = (PacketWriterUD*)lua_newuserdata(L, sizeof(PacketWriterUD));
+    new(w) PacketWriterUD();  // placement new to initialize vector
+    luaL_setmetatable(L, PACKET_WRITER_MT);
+    return 1;
+}
+
+// Get PacketWriterUD from Lua at index idx, return nullptr if wrong type
+static PacketWriterUD* packet_writer_check(lua_State* L, int idx) {
+    return (PacketWriterUD*)luaL_checkudata(L, idx, PACKET_WRITER_MT);
+}
+
+// Helper: write little-endian bytes to buffer
+static void write_le(std::vector<uint8_t>& buf, uint64_t val, size_t nbytes) {
+    for (size_t i = 0; i < nbytes; ++i) {
+        buf.push_back((uint8_t)(val & 0xFF));
+        val >>= 8;
+    }
+}
+
+// Helper: patch little-endian bytes at offset in buffer
+static void patch_le(std::vector<uint8_t>& buf, size_t offset, uint64_t val, size_t nbytes) {
+    if (offset + nbytes > buf.size()) return;  // bounds check
+    for (size_t i = 0; i < nbytes; ++i) {
+        buf[offset + i] = (uint8_t)(val & 0xFF);
+        val >>= 8;
+    }
+}
+
+// w:write_b(val) — write 1 byte
+static int lw_pw_write_b(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    uint8_t val = (uint8_t)luaL_checkinteger(L, 2);
+    w->buf.push_back(val);
+    lua_pushvalue(L, 1);  // return self for chaining
+    return 1;
+}
+
+// w:write_w(val) — write 2 bytes little-endian
+static int lw_pw_write_w(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    uint16_t val = (uint16_t)luaL_checkinteger(L, 2);
+    write_le(w->buf, val, 2);
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:write_l(val) — write 4 bytes little-endian
+static int lw_pw_write_l(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    uint32_t val = (uint32_t)luaL_checkinteger(L, 2);
+    write_le(w->buf, val, 4);
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:write_q(val) — write 8 bytes little-endian
+static int lw_pw_write_q(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    uint64_t val = (uint64_t)luaL_checkinteger(L, 2);
+    write_le(w->buf, val, 8);
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:write_str(str [, fixedlen]) — write string bytes; optional fixed length with \0 padding
+static int lw_pw_write_str(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    size_t len = 0;
+    const char* str = luaL_checklstring(L, 2, &len);
+    size_t fixedlen = (size_t)luaL_optinteger(L, 3, 0);
+
+    if (fixedlen > 0) {
+        // Write fixed-length field (pad with zeros, truncate if too long)
+        uint8_t tmp[256];
+        memset(tmp, 0, fixedlen);
+        if (len > 0) {
+            size_t cpy = len < fixedlen ? len : fixedlen;
+            memcpy(tmp, str, cpy);
+        }
+        w->buf.insert(w->buf.end(), tmp, tmp + fixedlen);
+    } else {
+        // Write variable-length string (no terminator)
+        if (len > 0) {
+            w->buf.insert(w->buf.end(), (uint8_t*)str, (uint8_t*)str + len);
+        }
+    }
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:write_bytes(raw) — append raw Lua string bytes
+static int lw_pw_write_bytes(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 2, &len);
+    if (len > 0) {
+        w->buf.insert(w->buf.end(), (uint8_t*)data, (uint8_t*)data + len);
+    }
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:write_zeros(n) — append n zero bytes
+static int lw_pw_write_zeros(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    size_t n = (size_t)luaL_checkinteger(L, 2);
+    w->buf.insert(w->buf.end(), n, 0);
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:set_b(offset, val) — patch 1 byte at offset
+static int lw_pw_set_b(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    size_t offset = (size_t)luaL_checkinteger(L, 2);
+    uint8_t val = (uint8_t)luaL_checkinteger(L, 3);
+    if (offset < w->buf.size()) {
+        w->buf[offset] = val;
+    }
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:set_w(offset, val) — patch 2 bytes little-endian at offset
+static int lw_pw_set_w(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    size_t offset = (size_t)luaL_checkinteger(L, 2);
+    uint16_t val = (uint16_t)luaL_checkinteger(L, 3);
+    patch_le(w->buf, offset, val, 2);
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:set_l(offset, val) — patch 4 bytes little-endian at offset
+static int lw_pw_set_l(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    size_t offset = (size_t)luaL_checkinteger(L, 2);
+    uint32_t val = (uint32_t)luaL_checkinteger(L, 3);
+    patch_le(w->buf, offset, val, 4);
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// w:len() — return current buffer length
+static int lw_pw_len(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    lua_pushinteger(L, (lua_Integer)w->buf.size());
+    return 1;
+}
+
+// w:build() — return buffer as Lua string
+static int lw_pw_build(lua_State* L) {
+    PacketWriterUD* w = packet_writer_check(L, 1);
+    lua_pushlstring(L, (const char*)w->buf.data(), w->buf.size());
+    return 1;
+}
+
+// __gc metamethod — call destructor
+static int lw_pw_gc(lua_State* L) {
+    PacketWriterUD* w = (PacketWriterUD*)luaL_checkudata(L, 1, PACKET_WRITER_MT);
+    w->~PacketWriterUD();  // explicitly destroy vector
+    return 0;
+}
+
 // packet_send_self(fd, bytes) — push a raw packet (cmd at offset 0..1) to fd
 static int lw_packet_send_self(lua_State* L) {
     int32_t fd = (int32_t)luaL_checkinteger(L, 1);
@@ -2567,6 +2742,8 @@ void register_globals(lua_State* L) {
         {"packet_rest",         lw_packet_rest},
         {"packet_send",         lw_packet_send},
         {"packet_send_self",    lw_packet_send_self},
+        // -- packet writer --
+        {"packet_writer",       lw_packet_writer_new},
         {"timer_after",         lw_timer_after},
         {"sleep",               lw_sleep},
         {"script_suspend",      lw_script_suspend},
@@ -2590,6 +2767,42 @@ void register_globals(lua_State* L) {
         lua_pushcfunction(L, r->func);
         lua_setglobal(L, r->name);
     }
+
+    // Register PacketWriter metatable
+    luaL_newmetatable(L, PACKET_WRITER_MT);
+
+    // __gc metamethod
+    lua_pushcfunction(L, lw_pw_gc);
+    lua_setfield(L, -2, "__gc");
+
+    // __len metamethod
+    lua_pushcfunction(L, lw_pw_len);
+    lua_setfield(L, -2, "__len");
+
+    // __index — method table
+    lua_newtable(L);
+    static const luaL_Reg pw_methods[] = {
+        {"write_b",     lw_pw_write_b},
+        {"write_w",     lw_pw_write_w},
+        {"write_l",     lw_pw_write_l},
+        {"write_q",     lw_pw_write_q},
+        {"write_str",   lw_pw_write_str},
+        {"write_bytes", lw_pw_write_bytes},
+        {"write_zeros", lw_pw_write_zeros},
+        {"set_b",       lw_pw_set_b},
+        {"set_w",       lw_pw_set_w},
+        {"set_l",       lw_pw_set_l},
+        {"len",         lw_pw_len},
+        {"build",       lw_pw_build},
+        {nullptr, nullptr}
+    };
+    for (const luaL_Reg* m = pw_methods; m->name; ++m) {
+        lua_pushcfunction(L, m->func);
+        lua_setfield(L, -2, m->name);
+    }
+    lua_setfield(L, -2, "__index");
+
+    lua_pop(L, 1);  // pop metatable
 }
 
 void start_event_system() {
