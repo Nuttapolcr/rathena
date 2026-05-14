@@ -808,6 +808,124 @@ static int lw_open_storage(lua_State* L) {
     return 1;
 }
 
+// open_guild_storage(player) -> 1 on success
+static int lw_open_guild_storage(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, g_api->storage.open_guild(sd) == 0 ? 1 : 0);
+    return 1;
+}
+
+// e_storage_mode bits — see common/mmo.hpp.
+static int storage_mode_from_arg(lua_State* L, int idx, int dflt) {
+    if (lua_isnoneornil(L, idx)) return dflt;
+    if (lua_isstring(L, idx) && !lua_isnumber(L, idx)) {
+        const char* s = lua_tostring(L, idx);
+        if (!strcmp(s, "get"))  return 0x1;  // STOR_MODE_GET
+        if (!strcmp(s, "put"))  return 0x2;  // STOR_MODE_PUT
+        if (!strcmp(s, "all"))  return 0x3;  // STOR_MODE_ALL
+        if (!strcmp(s, "none")) return 0x0;  // STOR_MODE_NONE
+        return luaL_error(L, "open_storage2: bad mode '%s' "
+                             "(want get|put|all|none or a number)", s);
+    }
+    return (int)luaL_checkinteger(L, idx);
+}
+
+// open_storage2(player, storage_id [, mode]) -> 1 on success
+//   mode: "get" | "put" | "all" (default) | "none", or an e_storage_mode bitmask
+static int lw_open_storage2(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) { lua_pushinteger(L, 0); return 1; }
+    int32_t id   = (int32_t)luaL_checkinteger(L, 2);
+    int     mode = storage_mode_from_arg(L, 3, 0x3 /* STOR_MODE_ALL */);
+    lua_pushinteger(L, g_api->storage.open_premium(sd, id, mode) ? 1 : 0);
+    return 1;
+}
+
+// storage_exists(storage_id) -> bool
+static int lw_storage_exists(lua_State* L) {
+    int32_t id = (int32_t)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, g_api->storage.exists(id));
+    return 1;
+}
+
+// register_storage(id, name [, max_num [, sql_table]]) -> bool
+//   id 0       -> renames the personal (Kafra) storage tab
+//   id 1..255  -> defines a premium storage open_storage2(player, id) can open
+//   The client shows each distinct `name` as its own storage window.
+//   `sql_table` is the char-server table backing it (default "storage"); for
+//   items to persist, the char-server must also know this id/table via
+//   storage.yml — see workshop README.
+static int lw_register_storage(lua_State* L) {
+    int32_t id   = (int32_t)luaL_checkinteger(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    int32_t max_num  = (int32_t)luaL_optinteger(L, 3, 0);
+    const char* tbl  = luaL_optstring(L, 4, nullptr);
+    lua_pushboolean(L, g_api->storage.define(id, name, tbl, max_num));
+    return 1;
+}
+
+// storage_name(id) -> string (the client-visible tab title; "Storage" if none)
+static int lw_storage_name(lua_State* L) {
+    int32_t id = (int32_t)luaL_checkinteger(L, 1);
+    lua_pushstring(L, g_api->storage.get_name(id));
+    return 1;
+}
+
+// ---- client UI windows ----
+
+static int8_t out_ui_from_arg(lua_State* L, int idx) {
+    if (lua_isstring(L, idx) && !lua_isnumber(L, idx)) {
+        const char* s = lua_tostring(L, idx);
+        if (!strcmp(s, "bank"))         return 0;  // OUT_UI_BANK
+        if (!strcmp(s, "stylist"))      return 1;  // OUT_UI_STYLIST
+        if (!strcmp(s, "captcha"))      return 2;  // OUT_UI_CAPTCHA
+        if (!strcmp(s, "macro"))        return 3;  // OUT_UI_MACRO
+        if (!strcmp(s, "tip"))          return 5;  // OUT_UI_TIP
+        if (!strcmp(s, "quest"))        return 6;  // OUT_UI_QUEST
+        if (!strcmp(s, "attendance"))   return 7;  // OUT_UI_ATTENDANCE
+        if (!strcmp(s, "enchantgrade")) return 8;  // OUT_UI_ENCHANTGRADE
+        if (!strcmp(s, "enchant"))      return 10; // OUT_UI_ENCHANT
+        return (int8_t)luaL_error(L, "open_ui: unknown window '%s'", s);
+    }
+    return (int8_t)luaL_checkinteger(L, idx);
+}
+
+// open_ui(player, window [, data])
+//   window: "bank"|"stylist"|"captcha"|"macro"|"tip"|"quest"|"attendance"
+//           |"enchantgrade"|"enchant", or an out_ui_type number.
+//   data:   per-window payload (quest id for "quest", tip id for "tip", …);
+//           default 0.
+static int lw_open_ui(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (!sd) return 0;
+    int8_t  ui   = out_ui_from_arg(L, 2);
+    int32_t data = (int32_t)luaL_optinteger(L, 3, 0);
+    g_api->ui.open(sd, ui, data);
+    return 0;
+}
+
+// open_dressroom(player)
+static int lw_open_dressroom(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (sd) g_api->ui.dressroom(sd);
+    return 0;
+}
+
+// open_roulette(player) — no-op if feature_roulette is disabled
+static int lw_open_roulette(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (sd) g_api->ui.roulette(sd);
+    return 0;
+}
+
+// open_mail(player)
+static int lw_open_mail(lua_State* L) {
+    map_session_data* sd = sd_from_arg(L, 1);
+    if (sd) g_api->ui.mail(sd);
+    return 0;
+}
+
 // ---- quest ----
 
 // quest_add(player, quest_id) -> 1 on success
@@ -1869,6 +1987,8 @@ static int hook_event_id_from_name(const std::string& s) {
     if (s == "quest_add")       return HOOK_QUEST_ADD;
     if (s == "quest_complete")  return HOOK_QUEST_COMPLETE;
     if (s == "storage_open")    return HOOK_STORAGE_OPEN;
+    if (s == "intif_connected" ||
+        s == "char_reconnect")  return HOOK_INTIF_CONNECTED;
     return -1;
 }
 
@@ -1958,6 +2078,12 @@ static int hook_dispatch(void* data, void* user_data) {
             lua_setfield(L, -2, "command");
             lua_pushstring(L, d->params ? d->params : "");
             lua_setfield(L, -2, "params");
+            break;
+        }
+        case HOOK_INTIF_CONNECTED: {
+            auto* d = static_cast<plugin_intif_connected_t*>(data);
+            lua_pushboolean(L, d->first ? 1 : 0);
+            lua_setfield(L, -2, "first");
             break;
         }
         default: break;
@@ -2374,6 +2500,16 @@ void register_globals(lua_State* L) {
         {"count_mobs_in_map",       lw_count_mobs_in_map},
         // -- storage --
         {"open_storage",        lw_open_storage},
+        {"open_guild_storage",  lw_open_guild_storage},
+        {"open_storage2",       lw_open_storage2},
+        {"storage_exists",      lw_storage_exists},
+        {"register_storage",    lw_register_storage},
+        {"storage_name",        lw_storage_name},
+        // -- client UI windows --
+        {"open_ui",             lw_open_ui},
+        {"open_dressroom",      lw_open_dressroom},
+        {"open_roulette",       lw_open_roulette},
+        {"open_mail",           lw_open_mail},
         // -- quest --
         {"quest_add",           lw_quest_add},
         {"quest_status",        lw_quest_status},

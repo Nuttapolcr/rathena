@@ -363,11 +363,55 @@ count_mobs_in_map("prontera")
 ### Storage & quests
 
 ```lua
-open_storage(player)
+open_storage      (player)              -- คลังส่วนตัว (Kafra) → 1 ถ้าเปิดได้
+open_guild_storage(player)              -- คลังกิลด์ → 1 ถ้าเปิดได้
+open_storage2     (player, id [, mode]) -- premium/extended storage (storage.yml)
+                                        --   mode: "get" | "put" | "all" (default) | "none"
+                                        --         หรือ e_storage_mode bitmask
+storage_exists    (id)                  -- → bool: id เป็น premium storage ที่ตั้งไว้หรือไม่
+register_storage  (id, name [, max_num [, sql_table]])  -- ลงทะเบียนคลัง → bool
+storage_name      (id)                  -- → string: ชื่อ tab ที่ client เห็น ("Storage" ถ้าไม่มี)
+```
+
+`register_storage` ลง/แก้ entry ในตารางคลังของ map-server (ตารางเดียวกับที่
+`storage.yml` ป้อน) — client แยก tab คลังด้วย `name` ที่ส่งไปกับ
+`ZC_INVENTORY_START` (`INVTYPE_STORAGE`) ดังนั้นลงทะเบียน `id`/`name` ใหม่
+แล้วเปิดด้วย `open_storage2` ก็ได้คลังใหม่ให้ player
+
+- `id == 0` → เปลี่ยนชื่อ tab ของคลังส่วนตัว (Kafra)
+- `id` 1..255 → premium storage ที่ `open_storage2(player, id)` เปิดได้
+- `sql_table` default `"storage"`; ถ้าจะให้ของในคลัง **เซฟ/โหลดจริง**
+  char-server ต้องรู้จัก id/table เดียวกันด้วย — ใส่ใน `db/(pre-)re/storage.yml`
+- char-server ส่ง list คลังใหม่ทุกครั้งที่ map (re)connect → ทับ entry ที่ลงไว้
+  ด้วย `register_storage` ลงทะเบียนใน hook `intif_connected` เพื่อให้ลงซ้ำเอง
+  ทุกครั้ง (ดู section Hooks ด้านล่าง)
+
+```lua
+hook("intif_connected", function() register_storage(20, "Event Vault", 600, "event_storage") end)
+open_storage2(player, 20)
 
 quest_add   (player, quest_id)
 quest_status(player, quest_id, status)   -- 0=Q_INACTIVE 1=Q_ACTIVE 2=Q_COMPLETE
 quest_check (player, quest_id [, type])  -- 0=HAVEQUEST 1=PLAYTIME 2=HUNTING
+```
+
+### Client UI windows
+
+เปิดหน้าต่าง UI ของ client ให้ player
+
+```lua
+open_ui(player, window [, data])
+-- window: "bank" | "stylist" | "captcha" | "macro" | "tip" | "quest"
+--         | "attendance" | "enchantgrade" | "enchant"  (หรือเลข out_ui_type)
+-- data:   payload เฉพาะหน้าต่าง — quest id สำหรับ "quest", tip id สำหรับ "tip"
+--         (default 0); หน้าต่างที่ client/PACKETVER ไม่รองรับจะถูกเมิน
+
+open_ui(player, "bank")
+open_ui(player, "quest", 12345)
+
+open_dressroom(player)                  -- หน้าต่าง dress room
+open_roulette (player)                  -- หน้าต่าง roulette (ต้องเปิด feature_roulette)
+open_mail     (player)                  -- หน้าต่างกล่องจดหมาย
 ```
 
 ### Battle config (conf/battle/*.conf)
@@ -524,7 +568,18 @@ end)
 `pc_login`, `pc_logout`, `pc_baselevelup`, `pc_joblevelup`, `pc_dead`,
 `pc_chat`, `pc_whisper`, `mob_kill`, `mob_spawn`, `item_use`, `item_pickup`,
 `item_drop`, `item_equip`, `skill_use`, `npc_click`, `atcmd_execute`,
-`quest_add`, `quest_complete`, `storage_open`
+`quest_add`, `quest_complete`, `storage_open`, `intif_connected`
+(alias: `char_reconnect`)
+
+`intif_connected` fire ทุกครั้งที่ map-server (เชื่อม/เชื่อมใหม่) กับ
+char-server เสร็จ — `ctx.first` = `true` ครั้งแรก, `false` เมื่อ reconnect
+ใช้ลงทะเบียนซ้ำของที่ char-server ทับตอน reconnect (เช่น `register_storage`)
+
+```lua
+hook("intif_connected", function(ctx)
+    register_storage(20, "Event Vault", 600, "event_storage")
+end)
+```
 
 Handler return `false` หรือ `"stop"` เพื่อ cancel action (เฉพาะ event ที่
 รองรับ HOOK_STOP — ดู [src/map/plugin.hpp](../../src/map/plugin.hpp))
