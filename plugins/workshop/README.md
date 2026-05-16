@@ -458,8 +458,12 @@ npc_str   (player)   -- input_str result
 ### NPC events
 
 ```lua
-trigger_event(player, "NpcName::OnLabel" [, ontouch])
+trigger_event(player, "NpcName::OnLabel" [, ontouch])  -- one NPC label
+npc_event_all("OnMyEvent")                              -- broadcast → all NPCs
+npc_event_all("OnMyEvent", player)                      -- + attach player rid
 ```
+
+`npc_event_all` = donpcevent semantics, return จำนวน NPC ที่รัน label.
 
 ### Variable storage (setd / getd / array)
 
@@ -533,18 +537,30 @@ stop_timer ("boss")    -- pause
 get_timer_tick("boss") -- ms ที่ผ่านไป
 ```
 
-### Clock events (rAthena-compatible)
+### Script-config + clock events — `on_event`
 
-ใช้ label name ตรง ๆ จาก rAthena (`OnClockHHMM`, `OnMinuteMM`, `OnHourHH`,
-`OnDayMMDD`, `OnSun..OnSat<HHMM>`):
+`on_event(label, fn)` ผูก handler กับ **ทุก** rAthena NPC-script event
+label. `fn(label, ctx)` — `ctx = { event=label, player? }`. handler เก่า
+ที่รับแค่ arg แรก (label string) ยังใช้ได้ (Lua ทิ้ง arg เกิน):
 
 ```lua
-on_event("OnMinute00", function(name) ... end)
+-- script_config PC labels (ctx.player มี) — อ้าง src/map/script.cpp
+on_event("OnPCLoginEvent",   function(l, ctx) message(ctx.player,"hi") end)
+on_event("OnPCDieEvent",     function(l, ctx) ... end)
+on_event("OnNPCKillEvent",   function(l, ctx) ... end)
+
+-- broadcast labels (ไม่มี player)
+on_event("OnInit",           function() log_info("npcs loaded") end)
+on_event("OnInterIfInit",    function() ... end)
+on_event("OnAgitStart",      function() ... end)
+
+-- clock labels (rAthena name ตรง ๆ)
+on_event("OnMinute00",  function() ... end)
 on_event("OnClock1300", function() ... end)
-on_event("OnSun1500",  function() ... end)
+on_event("OnSun1500",   function() ... end)
 ```
 
-หรือใช้ shortcut แบบ typed:
+shortcut typed (สังเคราะห์ label เดียวกัน):
 
 ```lua
 on_clock(13, 0,  function() ... end)
@@ -553,8 +569,13 @@ on_hour(0,       function() ... end)
 on_day(1, 1,     function() ... end)
 ```
 
-Dispatcher ทำงาน 1s interval ตรวจ wall-clock; events จะ fire ตอน
-minute/hour/day rollover (ตรงกับ behavior `npc_event_do_clock`)
+**Cancel ไม่ได้** — `on_event` informational ล้วน (label broadcast ไป
+NPC แล้ว). จะ gate action ใช้ `hook()` event ที่ cancellable แทน.
+
+**Behaviour change:** workshop ไม่รัน wall-clock ticker เองแล้ว — clock
+label มาจาก engine clock dispatcher → `npc_event_doall` ทางเดียว ⇒
+fire **ครั้งเดียว** sync กับ NPC `.txt` scripts (ไม่ double-fire/drift).
+ดู [docs/knowledge/workshop-script-config-events.md](../../docs/knowledge/workshop-script-config-events.md)
 
 ### Hooks (server events)
 
@@ -564,12 +585,23 @@ hook("pc_login", function(ctx)
 end)
 ```
 
-ชื่อ event ที่รองรับ:
-`pc_login`, `pc_logout`, `pc_baselevelup`, `pc_joblevelup`, `pc_dead`,
-`pc_chat`, `pc_whisper`, `mob_kill`, `mob_spawn`, `item_use`, `item_pickup`,
-`item_drop`, `item_equip`, `skill_use`, `npc_click`, `atcmd_execute`,
-`quest_add`, `quest_complete`, `storage_open`, `intif_connected`
-(alias: `char_reconnect`)
+ชื่อ event ที่รองรับ (ctx fields + cancel ได้ไหม + engine fire site
+อยู่ใน [docs/knowledge/workshop-hook-context-map.md](../../docs/knowledge/workshop-hook-context-map.md)):
+
+- player lifecycle: `pc_login`, `pc_logout`, `pc_baselevelup`,
+  `pc_joblevelup`, `pc_dead`
+- chat: `pc_chat`, `pc_whisper`, `pc_partychat`, `pc_guildchat`
+- mob: `mob_kill`, `mob_spawn`
+- item: `item_use`, `item_pickup`, `item_drop`, `item_equip`
+- skill / npc / cmd: `skill_use`, `npc_click`, `atcmd_execute`
+- trade: `trade_request`, `trade_commit`
+- party: `party_create`, `party_leave`
+- guild: `guild_create`, `guild_join`, `guild_leave`
+- status: `status_change_start`, `status_change_end`
+- vending: `vending_open`, `vending_buy`
+- storage / quest: `storage_open`, `quest_add`, `quest_complete`
+- companions: `pet_born`, `pet_catch`, `homun_call`, `homun_levelup`
+- inter-server: `intif_connected` (alias: `char_reconnect`)
 
 `intif_connected` fire ทุกครั้งที่ map-server (เชื่อม/เชื่อมใหม่) กับ
 char-server เสร็จ — `ctx.first` = `true` ครั้งแรก, `false` เมื่อ reconnect
@@ -601,6 +633,35 @@ end)
 
 `argspec`: `i` = int, `s` = string. Return value (number/string) ถูก
 push กลับเป็น script return
+
+### Calling any rAthena system — `script_eval` / `rathena`
+
+ถ้า API ใน workshop ไม่มี wrapper ให้ — เรียก rAthena script command
+ตรง ๆ ผ่าน `script_eval` (alias `rathena`). compile + run snippet
+**synchronous** ใต้ engine fake NPC → เข้าถึงทุก buildin (party / guild
+/ mail / instance / clan / channel / bg / achievement / ...) ฟรี:
+
+```lua
+script_eval("getitem 501,5; mailbox;", player)   -- snippet ผูก player (rid)
+rathena([[ announce "WoE in 5 min", bc_all; ]])  -- ไม่มี player → rid 0
+```
+
+`player` (optional) → snippet's rid เป็น account นั้น (`rid2sd`,
+`getcharid`, `getitem` ฯลฯ ยิงใส่ player นั้น). คืน `true` ถ้า parse +
+run สำเร็จ.
+
+**ข้อจำกัด:**
+
+- **ห้าม suspend** — snippet ต้องจบ synchronous. `sleep`/`sleep2`/
+  dialog (`mes`+`next`/`menu`/`input`) จะ park script_state แล้วเกิด
+  use-after-free. งานที่ต้อง sleep ใช้ `register_buildin` แทน
+  (มี `script_suspend`/`sleep`).
+- **Full script authority** — รันด้วยสิทธิ์เท่า NPC script. mod = trusted;
+  อย่าสร้าง snippet จาก input ของ client/player ดิบ ๆ
+- **Parse cost** ทุกครั้ง — อย่า `eval` ต่อ packet/frame; cache ใน Lua
+  หรือใช้ typed wrapper สำหรับ hot path
+
+ดู [docs/knowledge/workshop-script-eval.md](../../docs/knowledge/workshop-script-eval.md)
 
 ### Client packet hooks
 
@@ -644,6 +705,39 @@ them but the trampoline no-ops on the stale ref) and a re-run installs
 fresh ones. Hooking core gameplay packets is powerful but easy to break
 things with — start with log-only filters and a packet id you know your
 client uses.
+
+#### Building packets — `packet_writer()`
+
+`packet_read_*` decode; `packet_writer()` encode. คืน PacketWriter
+userdata, ทุก `write_*` little-endian, return self → chain ได้:
+
+```lua
+local w = packet_writer()
+w:write_w(0x0CFD)            -- cmd (2 bytes LE)
+ :write_l(player.aid)        -- 4 bytes
+ :write_b(1)                 -- 1 byte
+ :write_q(123456789)         -- 8 bytes
+ :write_str("Hi", 24)        -- fixed 24-byte field, \0-padded/truncated
+ :write_str("raw")           -- variable: just the bytes, no terminator
+ :write_bytes("\xDE\xAD")    -- raw Lua-string bytes
+ :write_zeros(4)             -- 4 zero bytes
+
+-- variable-length packet: reserve a size word, patch it after building
+local v = packet_writer()
+v:write_w(0x0CFE):write_w(0)            -- size placeholder at offset 2
+v:write_str(payload)
+v:set_w(2, v:len())                     -- patch size in place
+
+#w                                       -- == w:len() (byte count)
+packet_send_self(fd, w:build())          -- build() → Lua string
+packet_send(player, w:build(), 24)       -- SELF
+```
+
+Methods: `write_b/w/l/q` (1/2/4/8-byte LE int), `write_str(s [,fixedlen])`,
+`write_bytes(s)`, `write_zeros(n)`, in-place patch `set_b/w/l(offset,val)`,
+`len()` / `#w`, `build()` → string. `build()` ไม่ผูก cmd ให้ — เขียน cmd
+word เองที่ offset 0. PacketWriter เป็น Lua object ล้วน (ไม่ถือ engine
+ref) → reload-safe; gc อัตโนมัติ.
 
 ### Reload (runtime)
 

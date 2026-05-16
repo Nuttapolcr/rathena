@@ -978,6 +978,21 @@ static int lw_trigger_event(lua_State* L) {
     return 1;
 }
 
+// npc_event_all("OnLabel" [, player]) -> count of NPCs that ran it
+// Broadcasts a bare event label to every NPC defining it (donpcevent
+// semantics). With a player, that player's account is the script rid.
+static int lw_npc_event_all(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    if (!lua_isnoneornil(L, 2)) {
+        map_session_data* sd = sd_from_arg(L, 2);
+        int32_t rid = sd ? g_api->pc.get_aid(sd) : 0;
+        lua_pushinteger(L, g_api->npc.event_all_rid(name, rid));
+    } else {
+        lua_pushinteger(L, g_api->npc.event_all(name));
+    }
+    return 1;
+}
+
 // ---- clif effects / chat ----
 
 // progressbar(player, color_rgb, seconds)
@@ -1405,20 +1420,26 @@ static int lw_timer_after(lua_State* L) {
     return 1;
 }
 
-// ---- OnClock / OnMinute / OnHour / OnDay / OnSun..OnSat events ----
+// ---- on_event: rAthena script_config + clock label dispatch ----
 //
-// Names follow the rAthena label convention so users can copy-paste from
-// existing scripts. The dispatcher runs every second once start_event_system
-// has been called; it fires events when the wall-clock minute, hour, or
-// day rolls over (matching npc_event_do_clock semantics).
+// `on_event(label, fn)` binds fn to any rAthena NPC-script event label.
+// Two engine hooks feed this registry:
+//   HOOK_NPC_SCRIPT_EVENT — PC-attached labels (OnPCLoginEvent, ...);
+//                            fn(label, ctx) where ctx.player is set.
+//   HOOK_NPC_EVENT_DOALL  — broadcast labels (OnInit, OnInterIfInit,
+//                            OnAgit*, and the engine clock labels
+//                            OnClock*/OnMinute*/OnHour*/OnDay*/
+//                            OnSun..OnSat*, plus donpcevent).
+// The workshop no longer runs its own wall-clock ticker — clock labels
+// come from the engine's npc_event_do_clock → npc_event_doall path, so
+// they fire exactly once and stay in sync with NPC scripts.
 
 // event-name → list of registry refs (Lua functions)
 static std::map<std::string, std::vector<int>> g_event_handlers;
 
-static int32_t g_clock_tid = -1;
-static struct tm g_prev_tm = {};
-
-static void fire_event(const char* name) {
+// fire_event(label[, sd]) — call every Lua handler bound to `label`
+// with (label, ctx). ctx is a table; ctx.player is set when sd != null.
+static void fire_event(const char* name, map_session_data* sd = nullptr) {
     auto it = g_event_handlers.find(name);
     if (it == g_event_handlers.end()) return;
     lua_State* L = L_get();
@@ -1434,7 +1455,11 @@ static void fire_event(const char* name) {
             continue;
         }
         lua_pushstring(L, name);
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        lua_newtable(L);                       // ctx
+        lua_pushstring(L, name);
+        lua_setfield(L, -2, "event");
+        if (sd) { push_player(L, sd); lua_setfield(L, -2, "player"); }
+        if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
             wlog_warning("event '%s' error: %s", name,
                          lua_tostring(L, -1));
             lua_pop(L, 1);
@@ -1442,50 +1467,16 @@ static void fire_event(const char* name) {
     }
 }
 
-static int32_t clock_tick_cb(int32_t /*tid*/, int64_t /*tick*/,
-                             int32_t /*id*/, intptr_t /*data*/) {
-    time_t now = time(nullptr);
-    struct tm lt = {};
-    localtime_r(&now, &lt);
-
-    char buf[32];
-
-    if (lt.tm_min != g_prev_tm.tm_min) {
-        snprintf(buf, sizeof(buf), "OnMinute%02d", lt.tm_min);
-        fire_event(buf);
-
-        snprintf(buf, sizeof(buf), "OnClock%02d%02d", lt.tm_hour, lt.tm_min);
-        fire_event(buf);
-
-        const char* day = nullptr;
-        switch (lt.tm_wday) {
-            case 0: day = "OnSun"; break;
-            case 1: day = "OnMon"; break;
-            case 2: day = "OnTue"; break;
-            case 3: day = "OnWed"; break;
-            case 4: day = "OnThu"; break;
-            case 5: day = "OnFri"; break;
-            case 6: day = "OnSat"; break;
-        }
-        if (day) {
-            snprintf(buf, sizeof(buf), "%s%02d%02d", day, lt.tm_hour, lt.tm_min);
-            fire_event(buf);
-        }
-    }
-
-    if (lt.tm_hour != g_prev_tm.tm_hour) {
-        snprintf(buf, sizeof(buf), "OnHour%02d", lt.tm_hour);
-        fire_event(buf);
-    }
-
-    if (lt.tm_mday != g_prev_tm.tm_mday) {
-        snprintf(buf, sizeof(buf), "OnDay%02d%02d",
-                 lt.tm_mon + 1, lt.tm_mday);
-        fire_event(buf);
-    }
-
-    g_prev_tm = lt;
-    return 0;
+// Engine hook → workshop event registry bridges.
+static int npc_script_event_dispatch(void* data, void* /*ud*/) {
+    auto* d = static_cast<plugin_npc_script_event_t*>(data);
+    if (d && d->label) fire_event(d->label, d->sd);
+    return HOOK_CONTINUE;
+}
+static int npc_event_doall_dispatch(void* data, void* /*ud*/) {
+    auto* d = static_cast<plugin_npc_event_doall_t*>(data);
+    if (d && d->label) fire_event(d->label, nullptr);
+    return HOOK_CONTINUE;
 }
 
 // on_event("OnClock1300", fn) — generic registration. Accepts any of the
@@ -1971,6 +1962,25 @@ static int lw_register_buildin(lua_State* L) {
     return 1;
 }
 
+// script_eval(src [, player]) -> bool
+// rathena(src [, player])     -> bool   (alias)
+//
+// Compile + run an arbitrary rAthena script snippet synchronously under
+// the engine fake NPC. With a player arg the snippet's rid is that
+// player (so getcharid/rid2sd/getitem/etc. target them). This is the
+// catch-all for "call any rAthena system" — every buildin command is
+// reachable. The snippet MUST NOT suspend (no sleep / dialog).
+static int lw_script_eval(lua_State* L) {
+    const char* src = luaL_checkstring(L, 1);
+    int32_t rid = 0;
+    if (!lua_isnoneornil(L, 2)) {
+        map_session_data* sd = sd_from_arg(L, 2);
+        if (sd) rid = g_api->pc.get_aid(sd);
+    }
+    lua_pushboolean(L, g_api->script.eval(src, rid) ? 1 : 0);
+    return 1;
+}
+
 // ---- hook registration ----
 
 // Map of hook ids to a generic dispatcher that also pushes useful context.
@@ -1994,6 +2004,23 @@ static int hook_event_id_from_name(const std::string& s) {
     if (s == "quest_add")       return HOOK_QUEST_ADD;
     if (s == "quest_complete")  return HOOK_QUEST_COMPLETE;
     if (s == "storage_open")    return HOOK_STORAGE_OPEN;
+    if (s == "pc_partychat")    return HOOK_PC_PARTYCHAT;
+    if (s == "pc_guildchat")    return HOOK_PC_GUILDCHAT;
+    if (s == "trade_request")   return HOOK_TRADE_REQUEST;
+    if (s == "trade_commit")    return HOOK_TRADE_COMMIT;
+    if (s == "party_create")    return HOOK_PARTY_CREATE;
+    if (s == "party_leave")     return HOOK_PARTY_LEAVE;
+    if (s == "guild_create")    return HOOK_GUILD_CREATE;
+    if (s == "guild_join")      return HOOK_GUILD_JOIN;
+    if (s == "guild_leave")     return HOOK_GUILD_LEAVE;
+    if (s == "status_change_start") return HOOK_STATUS_CHANGE_START;
+    if (s == "status_change_end")   return HOOK_STATUS_CHANGE_END;
+    if (s == "vending_open")    return HOOK_VENDING_OPEN;
+    if (s == "vending_buy")     return HOOK_VENDING_BUY;
+    if (s == "pet_born")        return HOOK_PET_BORN;
+    if (s == "pet_catch")       return HOOK_PET_CATCH;
+    if (s == "homun_call")      return HOOK_HOMUN_CALL;
+    if (s == "homun_levelup")   return HOOK_HOMUN_LEVELUP;
     if (s == "intif_connected" ||
         s == "char_reconnect")  return HOOK_INTIF_CONNECTED;
     return -1;
@@ -2091,6 +2118,170 @@ static int hook_dispatch(void* data, void* user_data) {
             auto* d = static_cast<plugin_intif_connected_t*>(data);
             lua_pushboolean(L, d->first ? 1 : 0);
             lua_setfield(L, -2, "first");
+            break;
+        }
+        case HOOK_PC_WHISPER: {
+            auto* d = static_cast<plugin_pc_whisper_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushstring(L, d->target ? d->target : "");
+            lua_setfield(L, -2, "target");
+            lua_pushstring(L, d->message ? d->message : "");
+            lua_setfield(L, -2, "message");
+            break;
+        }
+        case HOOK_PC_PARTYCHAT: {
+            auto* d = static_cast<plugin_pc_partychat_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushstring(L, d->message ? d->message : "");
+            lua_setfield(L, -2, "message");
+            break;
+        }
+        case HOOK_PC_GUILDCHAT: {
+            auto* d = static_cast<plugin_pc_guildchat_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushstring(L, d->message ? d->message : "");
+            lua_setfield(L, -2, "message");
+            break;
+        }
+        case HOOK_ITEM_USE: {
+            auto* d = static_cast<plugin_item_use_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->index);   lua_setfield(L, -2, "index");
+            break;
+        }
+        case HOOK_ITEM_DROP: {
+            auto* d = static_cast<plugin_item_drop_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->index);   lua_setfield(L, -2, "index");
+            lua_pushinteger(L, d->amount);  lua_setfield(L, -2, "amount");
+            break;
+        }
+        case HOOK_ITEM_EQUIP: {
+            auto* d = static_cast<plugin_item_equip_t*>(data);
+            push_player(L, d->sd);            lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->index);     lua_setfield(L, -2, "index");
+            lua_pushinteger(L, d->position);  lua_setfield(L, -2, "position");
+            break;
+        }
+        case HOOK_SKILL_USE: {
+            auto* d = static_cast<plugin_skill_use_t*>(data);
+            if (d->src && g_api->bl.get_type(d->src) == PLUGIN_BL_PC) {
+                push_player(L, g_api->bl.as_sd(d->src));
+                lua_setfield(L, -2, "player");
+            }
+            lua_pushinteger(L, d->skill_id); lua_setfield(L, -2, "skill_id");
+            lua_pushinteger(L, d->skill_lv); lua_setfield(L, -2, "skill_lv");
+            break;
+        }
+        case HOOK_NPC_CLICK: {
+            auto* d = static_cast<plugin_npc_click_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            break;
+        }
+        case HOOK_TRADE_REQUEST: {
+            auto* d = static_cast<plugin_trade_request_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            push_player(L, d->target_sd);   lua_setfield(L, -2, "target");
+            break;
+        }
+        case HOOK_TRADE_COMMIT: {
+            auto* d = static_cast<plugin_trade_commit_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            push_player(L, d->tsd);         lua_setfield(L, -2, "target");
+            break;
+        }
+        case HOOK_PARTY_CREATE: {
+            auto* d = static_cast<plugin_party_create_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushstring(L, d->name ? d->name : "");
+            lua_setfield(L, -2, "name");
+            break;
+        }
+        case HOOK_PARTY_LEAVE: {
+            auto* d = static_cast<plugin_party_leave_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->party_id); lua_setfield(L, -2, "party_id");
+            break;
+        }
+        case HOOK_GUILD_CREATE: {
+            auto* d = static_cast<plugin_guild_create_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushstring(L, d->name ? d->name : "");
+            lua_setfield(L, -2, "name");
+            break;
+        }
+        case HOOK_GUILD_JOIN: {
+            auto* d = static_cast<plugin_guild_join_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->guild_id); lua_setfield(L, -2, "guild_id");
+            break;
+        }
+        case HOOK_GUILD_LEAVE: {
+            auto* d = static_cast<plugin_guild_leave_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->guild_id); lua_setfield(L, -2, "guild_id");
+            break;
+        }
+        case HOOK_STATUS_CHANGE_START:
+        case HOOK_STATUS_CHANGE_END: {
+            auto* d = static_cast<plugin_status_change_t*>(data);
+            if (d->bl && g_api->bl.get_type(d->bl) == PLUGIN_BL_PC) {
+                push_player(L, g_api->bl.as_sd(d->bl));
+                lua_setfield(L, -2, "player");
+            }
+            lua_pushinteger(L, d->type); lua_setfield(L, -2, "type");
+            lua_pushinteger(L, d->val1); lua_setfield(L, -2, "val1");
+            lua_pushinteger(L, d->val2); lua_setfield(L, -2, "val2");
+            lua_pushinteger(L, d->val3); lua_setfield(L, -2, "val3");
+            lua_pushinteger(L, d->val4); lua_setfield(L, -2, "val4");
+            lua_pushinteger(L, (lua_Integer)d->duration_ms);
+            lua_setfield(L, -2, "duration_ms");
+            break;
+        }
+        case HOOK_VENDING_OPEN: {
+            auto* d = static_cast<plugin_vending_open_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushstring(L, d->message ? d->message : "");
+            lua_setfield(L, -2, "message");
+            break;
+        }
+        case HOOK_VENDING_BUY: {
+            auto* d = static_cast<plugin_vending_buy_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            push_player(L, d->vsd);         lua_setfield(L, -2, "vendor");
+            break;
+        }
+        case HOOK_PET_BORN: {
+            auto* d = static_cast<plugin_pet_born_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            break;
+        }
+        case HOOK_PET_CATCH: {
+            auto* d = static_cast<plugin_pet_catch_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->item_id); lua_setfield(L, -2, "item_id");
+            break;
+        }
+        case HOOK_HOMUN_CALL: {
+            auto* d = static_cast<plugin_homun_call_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            break;
+        }
+        case HOOK_HOMUN_LEVELUP: {
+            auto* d = static_cast<plugin_homun_levelup_t*>(data);
+            lua_pushinteger(L, d->new_level); lua_setfield(L, -2, "new_level");
+            break;
+        }
+        case HOOK_QUEST_ADD: {
+            auto* d = static_cast<plugin_quest_add_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->quest_id); lua_setfield(L, -2, "quest_id");
+            break;
+        }
+        case HOOK_QUEST_COMPLETE: {
+            auto* d = static_cast<plugin_quest_complete_t*>(data);
+            push_player(L, d->sd);          lua_setfield(L, -2, "player");
+            lua_pushinteger(L, d->quest_id); lua_setfield(L, -2, "quest_id");
             break;
         }
         default: break;
@@ -2691,6 +2882,7 @@ void register_globals(lua_State* L) {
         {"quest_check",         lw_quest_check},
         // -- npc events --
         {"trigger_event",       lw_trigger_event},
+        {"npc_event_all",       lw_npc_event_all},
         // -- clif effects --
         {"progressbar",         lw_progressbar},
         {"progressbar_abort",   lw_progressbar_abort},
@@ -2750,6 +2942,8 @@ void register_globals(lua_State* L) {
         {"script_resume",       lw_script_resume},
         {"register_atcmd",      lw_register_atcmd},
         {"register_buildin",    lw_register_buildin},
+        {"script_eval",         lw_script_eval},
+        {"rathena",             lw_script_eval},
         {"hook",                lw_hook},
         {"on_event",            lw_on_event},
         {"on_clock",            lw_on_clock},
@@ -2806,24 +3000,21 @@ void register_globals(lua_State* L) {
 }
 
 void start_event_system() {
-    if (g_clock_tid >= 0) return;
-
-    // Snapshot the current wall-clock so the very first tick (~1s away)
-    // doesn't immediately fire OnClock/OnHour/OnDay for the current moment.
-    time_t now = time(nullptr);
-    localtime_r(&now, &g_prev_tm);
-
-    int64_t when = g_api->timer.gettick() + 1000;
-    g_clock_tid  = g_api->timer.add_timer_interval(
-        when, clock_tick_cb, 0, 0, 1000);
+    // Bridge the engine's NPC-event hooks into the on_event registry.
+    // Added once per process: the engine retains hook registrations
+    // across workshop_reload (their C dispatcher + null user_data stay
+    // valid), so re-adding on reload would double-fire.
+    static bool s_npc_event_hooks_added = false;
+    if (!s_npc_event_hooks_added) {
+        g_api->hook_add(HOOK_NPC_SCRIPT_EVENT, npc_script_event_dispatch,
+                        nullptr, 100);
+        g_api->hook_add(HOOK_NPC_EVENT_DOALL, npc_event_doall_dispatch,
+                        nullptr, 100);
+        s_npc_event_hooks_added = true;
+    }
 }
 
 void stop_event_system() {
-    if (g_clock_tid >= 0) {
-        g_api->timer.delete_timer(g_clock_tid, clock_tick_cb);
-        g_clock_tid = -1;
-    }
-
     // Cancel any pending named-timer ticks so their data structs are freed.
     for (auto& kv : g_named_timers) {
         cancel_pending_named_timer(kv.second);

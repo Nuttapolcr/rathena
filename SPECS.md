@@ -88,3 +88,32 @@ Lua `PacketWriter` API for custom packet construction. Example in
 `plugins/workshop/examples/packet_writer_example.lua`.
 
 - Knowledge: none recorded yet
+
+## workshop: full Lua↔rAthena bridge — 2026-05-17 (commit WIP, branch plugin/workshop)
+
+Restored the build (commit edc1245b6 had shipped the Lua half of the
+storage/UI/intif API with no engine half — cherry-picked a3a9c7a6f to
+restore `plugin_ui_api_t`, the extended `plugin_storage_api_t`, and
+`HOOK_INTIF_CONNECTED`). Then: completed `hook()` coverage so every
+engine-fired `HOOK_*` has a Lua name and a populated ctx table;
+documented the full packet decode/encode/custom-id surface; added
+`script.eval` (`script_eval`/`rathena()` in Lua) — a synchronous
+arbitrary-script-snippet bridge that exposes every buildin command to
+mods (the "call any rAthena system" answer). Finally, wired
+`on_event(label, fn)` to rAthena's NPC-script event system via two new
+engine hooks (HOOK_NPC_SCRIPT_EVENT, HOOK_NPC_EVENT_DOALL) so Lua can
+subscribe to every `script_config` label (OnPCLoginEvent, OnInit,
+OnAgit*, ...) and clock labels, plus `npc_event_all()` to broadcast a
+label to NPCs.
+
+**Behaviour change:** the workshop's own 1-second wall-clock ticker was
+removed. Clock labels (OnClock*/OnMinute*/OnHour*/OnDay*/OnSun..Sat*)
+now come from the engine's clock dispatcher → `npc_event_doall`, so
+they fire exactly once and stay in lockstep with NPC `.txt` scripts.
+`on_clock`/`on_minute`/`on_hour`/`on_day` are unchanged.
+
+- Knowledge: [workshop-hook-context-map.md](docs/knowledge/workshop-hook-context-map.md),
+  [workshop-missing-engine-api.md](docs/knowledge/workshop-missing-engine-api.md),
+  [workshop-packet-api.md](docs/knowledge/workshop-packet-api.md),
+  [workshop-script-eval.md](docs/knowledge/workshop-script-eval.md),
+  [workshop-script-config-events.md](docs/knowledge/workshop-script-config-events.md)

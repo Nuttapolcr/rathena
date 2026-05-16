@@ -45,6 +45,7 @@
 #include "clif.hpp"
 #include "homunculus.hpp"
 #include "itemdb.hpp"
+#include "mail.hpp"
 #include "map.hpp"
 #include "mob.hpp"
 #include "npc.hpp"
@@ -282,6 +283,31 @@ static const char* api_script_get_var_str(script_state* st, map_session_data* /*
 	if (!st || !varname) return "";
 	int64 uid = reference_uid(add_str(varname), index);
 	return get_val2_str(st, uid, nullptr);
+}
+
+// Compile + run an arbitrary rAthena script snippet synchronously,
+// under the engine's fake NPC. `rid` attaches a player (0 = none).
+// This is the catch-all bridge that exposes every buildin script
+// command to plugins without widening the typed API.
+//
+// LIFETIME: the snippet must run to completion synchronously. If it
+// parks the script_state (sleep/sleep2, or a dialog primitive that
+// waits for player input) the parked state still references this
+// code, and freeing it here would be use-after-free. v1 contract:
+// callers must not use suspending commands in eval(); we free the
+// code only when the state ended normally, and leak-with-warning
+// otherwise (rare, and far safer than a dangling pointer).
+static bool api_script_eval(const char* src, int32_t rid)
+{
+	if (!src || !*src) return false;
+	struct script_code* code =
+		parse_script(src, "plugin_eval", 0, SCRIPT_IGNORE_EXTERNAL_BRACKETS);
+	if (!code) return false;
+	run_script(code, 0, rid, fake_nd->id);
+	// run_script allocates and runs the state inline; if it did not
+	// suspend, the state is already freed and the code is ours to drop.
+	script_free_code(code);
+	return true;
 }
 
 // ============================================================
@@ -615,6 +641,18 @@ static bool api_npc_del_script_file(const char* path)
 	return was_present;
 }
 
+static int32_t api_npc_event_all(const char* name)
+{
+	if (!name || !*name) return 0;
+	return npc_event_doall(name);
+}
+
+static int32_t api_npc_event_all_rid(const char* name, int32_t rid)
+{
+	if (!name || !*name) return 0;
+	return npc_event_doall_id(name, rid);
+}
+
 // ============================================================
 // Skill API wrappers
 // ============================================================
@@ -637,7 +675,96 @@ static int32_t api_skill_use_id(map_session_data* sd, uint16_t skill_id,
 
 static int32_t api_storage_open(map_session_data* sd)
 {
+	if (!sd) return 1;
 	return storage_storageopen(sd);
+}
+
+static int32_t api_storage_open_guild(map_session_data* sd)
+{
+	if (!sd) return 1;
+	return storage_guild_storageopen(sd);
+}
+
+static bool api_storage_open_premium(map_session_data* sd, int32_t storage_id, int32_t mode)
+{
+	if (!sd || storage_id < 0 || storage_id > UINT8_MAX)
+		return false;
+	if (!storage_exists(static_cast<uint8>(storage_id)))
+		return false;
+	if (mode < STOR_MODE_NONE || mode > STOR_MODE_ALL)
+		mode = STOR_MODE_ALL;
+	return storage_premiumStorage_load(sd, static_cast<uint8>(storage_id),
+	                                   static_cast<uint8>(mode));
+}
+
+static bool api_storage_exists(int32_t storage_id)
+{
+	if (storage_id < 0 || storage_id > UINT8_MAX)
+		return false;
+	return storage_exists(static_cast<uint8>(storage_id));
+}
+
+static bool api_storage_define(int32_t id, const char* name,
+                               const char* sql_table, int32_t max_num)
+{
+	if (id < 0 || id > UINT8_MAX || !name || !*name)
+		return false;
+
+	auto it = storage_db.find(static_cast<uint16>(id));
+	std::shared_ptr<s_storage_table> tbl =
+		(it != storage_db.end() && it->second) ? it->second
+		                                       : std::make_shared<s_storage_table>();
+
+	if (it == storage_db.end() || !it->second) {
+		std::memset(tbl.get(), 0, sizeof(s_storage_table));
+		tbl->id      = static_cast<uint8>(id);
+		tbl->max_num = MAX_STORAGE;
+		// Reuse the standard `storage` table so an id taken from storage.yml
+		// still resolves even when the caller doesn't pass sql_table.
+		std::snprintf(tbl->table, sizeof(tbl->table), "%s", "storage");
+	}
+
+	std::snprintf(tbl->name, sizeof(tbl->name), "%s", name);
+	if (sql_table && *sql_table)
+		std::snprintf(tbl->table, sizeof(tbl->table), "%s", sql_table);
+	if (max_num > 0)
+		tbl->max_num = static_cast<uint16>(max_num > MAX_STORAGE ? MAX_STORAGE : max_num);
+
+	storage_db[static_cast<uint16>(id)] = tbl;
+	return true;
+}
+
+static const char* api_storage_get_name(int32_t id)
+{
+	if (id < 0 || id > UINT8_MAX)
+		return "Storage";
+	return storage_getName(static_cast<uint8>(id));
+}
+
+// ============================================================
+// Client UI window wrappers
+// ============================================================
+
+static void api_ui_open(map_session_data* sd, int32_t ui_type, int32_t data)
+{
+	if (!sd) return;
+	clif_ui_open(*sd, static_cast<out_ui_type>(ui_type), data);
+}
+
+static void api_ui_dressroom(map_session_data* sd)
+{
+	if (sd) clif_dressing_room(*sd);
+}
+
+static void api_ui_roulette(map_session_data* sd)
+{
+	if (sd && battle_config.feature_roulette)
+		clif_roulette_open(sd);
+}
+
+static void api_ui_mail(map_session_data* sd)
+{
+	if (sd) mail_openmail(sd);
 }
 
 // ============================================================
@@ -1118,6 +1245,7 @@ static plugin_api_t s_api = {
 		api_script_set_var_str,
 		api_script_get_var_num,
 		api_script_get_var_str,
+		api_script_eval,
 	},
 
 	// pc sub-struct
@@ -1217,6 +1345,8 @@ static plugin_api_t s_api = {
 		api_npc_event,
 		api_npc_add_script_file,
 		api_npc_del_script_file,
+		api_npc_event_all,
+		api_npc_event_all_rid,
 	},
 
 	// skill sub-struct
@@ -1231,6 +1361,19 @@ static plugin_api_t s_api = {
 	// storage sub-struct
 	{
 		api_storage_open,
+		api_storage_open_guild,
+		api_storage_open_premium,
+		api_storage_exists,
+		api_storage_define,
+		api_storage_get_name,
+	},
+
+	// ui sub-struct
+	{
+		api_ui_open,
+		api_ui_dressroom,
+		api_ui_roulette,
+		api_ui_mail,
 	},
 
 	// clif sub-struct

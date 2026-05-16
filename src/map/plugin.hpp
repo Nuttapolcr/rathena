@@ -96,6 +96,13 @@ enum e_plugin_hook {
 	// Commands
 	HOOK_ATCMD_EXECUTE,     // @command or #command executed (informational)
 
+	// Inter-server
+	HOOK_INTIF_CONNECTED,   // map-server finished (re)connecting to the char-server
+
+	// NPC script-config events (informational — cannot cancel)
+	HOOK_NPC_SCRIPT_EVENT,  // a PC-attached script_config label fired (OnPCLoginEvent, ...)
+	HOOK_NPC_EVENT_DOALL,   // a broadcast label fired to all NPCs (OnInit, OnAgit*, OnClock*, donpcevent, ...)
+
 	HOOK_MAX
 };
 
@@ -344,6 +351,34 @@ struct plugin_atcmd_execute_t {
 	const char*              params;     // parameters after the command
 };
 
+// HOOK_INTIF_CONNECTED — informational. Fires once per (re)connection to the
+// char-server, after the inter-server tables (storage list, etc.) have been
+// received. A good place to re-apply runtime registrations that the
+// char-server overwrites on reconnect (see storage.define). HOOK_STOP is
+// ignored.
+struct plugin_intif_connected_t {
+	bool first;   // true on the initial connect, false on a later reconnect
+};
+
+// HOOK_NPC_SCRIPT_EVENT — informational. Fired when the engine dispatches
+// a PC-attached script_config label (OnPCLoginEvent, OnPCDieEvent,
+// OnNPCKillEvent, ...) via npc_script_event(). HOOK_STOP is ignored (the
+// label is already being broadcast to NPCs).
+struct plugin_npc_script_event_t {
+	struct map_session_data* sd;     // player the event is attributed to
+	int32_t                  npce_type;  // enum npce_event value
+	const char*              label;  // resolved label name, e.g. "OnPCLoginEvent"
+};
+
+// HOOK_NPC_EVENT_DOALL — informational. Fired once per
+// npc_event_doall_id() call (covers OnInit, OnInterIfInit, OnAgit*,
+// OnClock*/OnMinute*/OnHour*/OnDay*, donpcevent broadcasts, ...).
+// HOOK_STOP is ignored (the broadcast already happened).
+struct plugin_npc_event_doall_t {
+	const char* label;  // event label without the "::" prefix
+	int32_t     rid;    // attached account id, 0 if none
+};
+
 // ============================================================
 // Callback types
 // ============================================================
@@ -474,6 +509,15 @@ struct plugin_script_api_t {
 	                          const char* varname, int32_t index);
 	const char* (*get_var_str)(struct script_state* st, struct map_session_data* sd,
 	                          const char* varname, int32_t index);
+
+	// Compile + run an arbitrary rAthena script snippet synchronously
+	// under the engine fake NPC. `rid` = attached player account id
+	// (0 = none). Returns true if it parsed and ran. This transitively
+	// exposes every buildin script command (party/guild/mail/instance/
+	// clan/channel/bg/...) to plugins. The snippet MUST NOT suspend
+	// (no sleep/sleep2, no dialog primitives) — it has to complete
+	// synchronously.
+	bool (*eval)(const char* src, int32_t rid);
 };
 
 // ---- Player (PC) functions ----
@@ -684,6 +728,13 @@ struct plugin_npc_api_t {
 	// effect — once do_init_npc has run, scripts are already parsed.
 	// Returns true if the path was present before the call.
 	bool (*del_script_file)(const char* path);
+
+	// Broadcast an event label to every NPC that defines it (the
+	// donpcevent / OnLabel mechanism). `name` is the bare label, e.g.
+	// "OnMyEvent". Returns the number of NPCs that ran it. event_all_rid
+	// attaches a player account id as the script rid.
+	int32_t (*event_all)(const char* name);
+	int32_t (*event_all_rid)(const char* name, int32_t rid);
 };
 
 // ---- Skill utilities ----
@@ -699,8 +750,64 @@ struct plugin_skill_api_t {
 };
 
 // ---- Storage ----
+// `mode` for open_premium is an OR of e_storage_mode bits: STOR_MODE_GET=0x1
+// (take only), STOR_MODE_PUT=0x2 (deposit only), STOR_MODE_ALL=0x3 (both).
 struct plugin_storage_api_t {
+	// Personal (Kafra) storage. Returns 0 on success, non-zero if it could
+	// not be opened (already open, intimacy lock, etc.).
 	int32_t (*open)(struct map_session_data* sd);
+
+	// Guild storage. Returns 0 on success, non-zero on failure (no guild,
+	// already in use by another member, GMs blocked, …).
+	int32_t (*open_guild)(struct map_session_data* sd);
+
+	// Premium / extended storage configured in storage.yml. `storage_id`
+	// must be a known id (see exists()); `mode` limits get/put access.
+	// Returns true if the load was kicked off, false on a bad id / when one
+	// is already loading.
+	bool (*open_premium)(struct map_session_data* sd, int32_t storage_id, int32_t mode);
+
+	// True if `storage_id` is a configured premium storage.
+	bool (*exists)(int32_t storage_id);
+
+	// Register (or update) a storage definition in the map-server's table —
+	// the same table storage.yml feeds. The client distinguishes storage
+	// tabs by this `name` (sent in ZC_INVENTORY_START as the INVTYPE_STORAGE
+	// label), so registering a fresh `id`/`name` and opening it gives the
+	// player a new storage window.
+	//   id        — 0 is the personal (Kafra) storage; registering it just
+	//               renames that tab. 1..255 is a premium/extended storage
+	//               that open_premium() can open.
+	//   name      — client-visible tab title (truncated to NAME_LENGTH-1).
+	//   sql_table — char-server table that backs it; null/empty keeps the
+	//               existing one (or defaults to "storage" for a new id).
+	//   max_num   — slot cap, clamped to MAX_STORAGE; 0 keeps the default.
+	// Returns false on a bad id or empty name.
+	//
+	// NOTE: this changes only the *map* server. For a premium storage's
+	// items to actually load and save, the char-server must know the same
+	// id/table — list it in db/(pre-)re/storage.yml. The char-server resends
+	// its storage list on (re)connect, which overwrites entries added here.
+	bool (*define)(int32_t id, const char* name,
+	               const char* sql_table, int32_t max_num);
+
+	// Client-visible name of storage `id` ("Storage" if not registered).
+	const char* (*get_name)(int32_t id);
+};
+
+// ---- Client UI windows ----
+// Opens one of the built-in client panels. The generic open() maps to the
+// ZC_UI_OPEN packet; `ui_type` is an out_ui_type value:
+//   0 BANK   1 STYLIST   2 CAPTCHA   3 MACRO   5 TIP   6 QUEST
+//   7 ATTENDANCE   8 ENCHANTGRADE   10 ENCHANT
+// `data` is the per-panel payload (quest id for QUEST, tip id for TIP, …);
+// pass 0 when the panel takes none. Panels not supported by the player's
+// PACKETVER are silently ignored by the client/engine.
+struct plugin_ui_api_t {
+	void (*open)      (struct map_session_data* sd, int32_t ui_type, int32_t data);
+	void (*dressroom) (struct map_session_data* sd);  // dress-room preview window
+	void (*roulette)  (struct map_session_data* sd);  // roulette window (needs feature_roulette)
+	void (*mail)      (struct map_session_data* sd);  // mailbox window
 };
 
 // ---- Battle config ----
@@ -904,6 +1011,7 @@ struct plugin_api_t {
 	struct plugin_npc_api_t     npc;
 	struct plugin_skill_api_t   skill;
 	struct plugin_storage_api_t storage;
+	struct plugin_ui_api_t      ui;
 	struct plugin_clif_api_t    clif;
 	struct plugin_timer_api_t   timer;
 	struct plugin_log_api_t     log;
