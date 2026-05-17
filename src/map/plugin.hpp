@@ -591,6 +591,23 @@ struct plugin_pc_api_t {
 	int32_t     (*get_npc_menu)  (struct map_session_data* sd);  // last selection (1-based)
 	int32_t     (*get_npc_amount)(struct map_session_data* sd);  // integer input
 	const char* (*get_npc_str)   (struct map_session_data* sd);  // string input
+
+	// ---- Usable items / registry (added for autonomous AI plugins) ----
+
+	// Consume one usable item by nameid. The plugin does not know inventory
+	// slot indices, so this finds the first stack of `nameid` with amount>0
+	// and runs it through pc_useitem. Returns 1 on success, 0 otherwise
+	// (item not carried, on cooldown, not usable, etc.).
+	int32_t (*use_item)(struct map_session_data* sd, uint32_t nameid);
+
+	// Read/write a player-scoped registry variable by its script name.
+	// Accepts the same prefixes the script engine uses (e.g. "##AI_ENABLE"
+	// for an account var, "#AI_ENABLE" for a char var). Unlike
+	// script.get_var_num these do NOT require a script_state, so they are
+	// safe to call from a timer tick. get_reg returns 0 if unset.
+	int64_t (*get_reg)(struct map_session_data* sd, const char* name);
+	void    (*set_reg)(struct map_session_data* sd, const char* name,
+	                   int64_t val);
 };
 
 // ---- Monster (mob) functions ----
@@ -681,6 +698,13 @@ struct plugin_bl_api_t {
 
 	// Returns sd if bl is a player (PLUGIN_BL_PC), null otherwise.
 	struct map_session_data* (*as_sd)(struct block_list* bl);
+
+	// Generic block_list accessors — work for any entity type. Useful when
+	// iterating with foreachinarea/foreachinmap and you only need an id or
+	// position (e.g. picking the nearest mob). Return 0 if bl is null.
+	int32_t (*get_id)(struct block_list* bl);
+	int16_t (*get_x) (struct block_list* bl);
+	int16_t (*get_y) (struct block_list* bl);
 };
 
 // ---- Item data accessors ----
@@ -747,6 +771,16 @@ struct plugin_skill_api_t {
 	const char* (*get_name)(uint16_t skill_id);  // AEGIS name (e.g. "MG_FIREBOLT")
 	int32_t     (*get_inf) (uint16_t skill_id);  // INF_ATTACK_SKILL=1, INF_GROUND_SKILL=2, ...
 	uint16_t    (*name2id) (const char* name);   // 0 if not found
+};
+
+// ---- Unit actions (movement / combat orders) ----
+struct plugin_unit_api_t {
+	// Order a unit to attack target_id. continuous: 1 = keep attacking,
+	// 2 = single step attack (bits may be combined). Returns the engine's
+	// USW_* result mask (0 = ordered normally). The engine validates the
+	// target and range, so a stale/dead target id is safely rejected.
+	int32_t (*attack)(struct map_session_data* sd, int32_t target_id,
+	                  int32_t continuous);
 };
 
 // ---- Storage ----
@@ -1010,6 +1044,7 @@ struct plugin_api_t {
 	struct plugin_quest_api_t   quest;
 	struct plugin_npc_api_t     npc;
 	struct plugin_skill_api_t   skill;
+	struct plugin_unit_api_t    unit;
 	struct plugin_storage_api_t storage;
 	struct plugin_ui_api_t      ui;
 	struct plugin_clif_api_t    clif;
