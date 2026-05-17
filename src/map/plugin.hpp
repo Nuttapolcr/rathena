@@ -99,6 +99,10 @@ enum e_plugin_hook {
 	// Inter-server
 	HOOK_INTIF_CONNECTED,   // map-server finished (re)connecting to the char-server
 
+	// NPC script-config events (informational — cannot cancel)
+	HOOK_NPC_SCRIPT_EVENT,  // a PC-attached script_config label fired (OnPCLoginEvent, ...)
+	HOOK_NPC_EVENT_DOALL,   // a broadcast label fired to all NPCs (OnInit, OnAgit*, OnClock*, donpcevent, ...)
+
 	HOOK_MAX
 };
 
@@ -356,6 +360,25 @@ struct plugin_intif_connected_t {
 	bool first;   // true on the initial connect, false on a later reconnect
 };
 
+// HOOK_NPC_SCRIPT_EVENT — informational. Fired when the engine dispatches
+// a PC-attached script_config label (OnPCLoginEvent, OnPCDieEvent,
+// OnNPCKillEvent, ...) via npc_script_event(). HOOK_STOP is ignored (the
+// label is already being broadcast to NPCs).
+struct plugin_npc_script_event_t {
+	struct map_session_data* sd;     // player the event is attributed to
+	int32_t                  npce_type;  // enum npce_event value
+	const char*              label;  // resolved label name, e.g. "OnPCLoginEvent"
+};
+
+// HOOK_NPC_EVENT_DOALL — informational. Fired once per
+// npc_event_doall_id() call (covers OnInit, OnInterIfInit, OnAgit*,
+// OnClock*/OnMinute*/OnHour*/OnDay*, donpcevent broadcasts, ...).
+// HOOK_STOP is ignored (the broadcast already happened).
+struct plugin_npc_event_doall_t {
+	const char* label;  // event label without the "::" prefix
+	int32_t     rid;    // attached account id, 0 if none
+};
+
 // ============================================================
 // Callback types
 // ============================================================
@@ -486,6 +509,15 @@ struct plugin_script_api_t {
 	                          const char* varname, int32_t index);
 	const char* (*get_var_str)(struct script_state* st, struct map_session_data* sd,
 	                          const char* varname, int32_t index);
+
+	// Compile + run an arbitrary rAthena script snippet synchronously
+	// under the engine fake NPC. `rid` = attached player account id
+	// (0 = none). Returns true if it parsed and ran. This transitively
+	// exposes every buildin script command (party/guild/mail/instance/
+	// clan/channel/bg/...) to plugins. The snippet MUST NOT suspend
+	// (no sleep/sleep2, no dialog primitives) — it has to complete
+	// synchronously.
+	bool (*eval)(const char* src, int32_t rid);
 };
 
 // ---- Player (PC) functions ----
@@ -696,6 +728,13 @@ struct plugin_npc_api_t {
 	// effect — once do_init_npc has run, scripts are already parsed.
 	// Returns true if the path was present before the call.
 	bool (*del_script_file)(const char* path);
+
+	// Broadcast an event label to every NPC that defines it (the
+	// donpcevent / OnLabel mechanism). `name` is the bare label, e.g.
+	// "OnMyEvent". Returns the number of NPCs that ran it. event_all_rid
+	// attaches a player account id as the script rid.
+	int32_t (*event_all)(const char* name);
+	int32_t (*event_all_rid)(const char* name, int32_t rid);
 };
 
 // ---- Skill utilities ----

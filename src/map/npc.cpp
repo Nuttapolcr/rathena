@@ -1335,6 +1335,12 @@ int32 npc_event_doall_id(const char* name, int32 rid)
 {
 	int32 c = 0;
 	char buf[EVENT_NAME_LENGTH];
+
+	{
+		plugin_npc_event_doall_t hook_data = { name, (int32_t)rid };
+		plugin_hook_fire( HOOK_NPC_EVENT_DOALL, &hook_data );
+	}
+
 	safesnprintf(buf, sizeof(buf), "::%s", name);
 	ev_db->foreach(ev_db,npc_event_doall_sub,&c,buf,rid);
 	return c;
@@ -5831,6 +5837,13 @@ int32 npc_parsesrcfile(const char* filepath)
 size_t npc_script_event( map_session_data& sd, enum npce_event type ){
 	if (type == NPCE_MAX)
 		return 0;
+
+	{
+		plugin_npc_script_event_t hook_data = {
+			&sd, (int32_t)type, npc_get_script_event_name( type )
+		};
+		plugin_hook_fire( HOOK_NPC_SCRIPT_EVENT, &hook_data );
+	}
 
 	std::vector<struct script_event_s>& vector = script_event[type];
 

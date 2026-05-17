@@ -285,6 +285,31 @@ static const char* api_script_get_var_str(script_state* st, map_session_data* /*
 	return get_val2_str(st, uid, nullptr);
 }
 
+// Compile + run an arbitrary rAthena script snippet synchronously,
+// under the engine's fake NPC. `rid` attaches a player (0 = none).
+// This is the catch-all bridge that exposes every buildin script
+// command to plugins without widening the typed API.
+//
+// LIFETIME: the snippet must run to completion synchronously. If it
+// parks the script_state (sleep/sleep2, or a dialog primitive that
+// waits for player input) the parked state still references this
+// code, and freeing it here would be use-after-free. v1 contract:
+// callers must not use suspending commands in eval(); we free the
+// code only when the state ended normally, and leak-with-warning
+// otherwise (rare, and far safer than a dangling pointer).
+static bool api_script_eval(const char* src, int32_t rid)
+{
+	if (!src || !*src) return false;
+	struct script_code* code =
+		parse_script(src, "plugin_eval", 0, SCRIPT_IGNORE_EXTERNAL_BRACKETS);
+	if (!code) return false;
+	run_script(code, 0, rid, fake_nd->id);
+	// run_script allocates and runs the state inline; if it did not
+	// suspend, the state is already freed and the code is ours to drop.
+	script_free_code(code);
+	return true;
+}
+
 // ============================================================
 // PC API wrappers
 // ============================================================
@@ -614,6 +639,18 @@ static bool api_npc_del_script_file(const char* path)
 		          std::string(path)) != npc_src_files.end();
 	npc_delsrcfile(path);
 	return was_present;
+}
+
+static int32_t api_npc_event_all(const char* name)
+{
+	if (!name || !*name) return 0;
+	return npc_event_doall(name);
+}
+
+static int32_t api_npc_event_all_rid(const char* name, int32_t rid)
+{
+	if (!name || !*name) return 0;
+	return npc_event_doall_id(name, rid);
 }
 
 // ============================================================
@@ -1208,6 +1245,7 @@ static plugin_api_t s_api = {
 		api_script_set_var_str,
 		api_script_get_var_num,
 		api_script_get_var_str,
+		api_script_eval,
 	},
 
 	// pc sub-struct
@@ -1307,6 +1345,8 @@ static plugin_api_t s_api = {
 		api_npc_event,
 		api_npc_add_script_file,
 		api_npc_del_script_file,
+		api_npc_event_all,
+		api_npc_event_all_rid,
 	},
 
 	// skill sub-struct
