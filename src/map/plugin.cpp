@@ -429,6 +429,36 @@ static int32_t     api_pc_get_npc_menu  (map_session_data* sd) { return sd ? sd-
 static int32_t     api_pc_get_npc_amount(map_session_data* sd) { return sd ? sd->npc_amount : 0; }
 static const char* api_pc_get_npc_str   (map_session_data* sd) { return sd ? sd->npc_str    : ""; }
 
+// ---- Usable items / registry (for autonomous AI plugins) ----
+
+static int32_t api_pc_use_item(map_session_data* sd, uint32_t nameid)
+{
+	if (!sd || nameid == 0)
+		return 0;
+	for (int32 i = 0; i < MAX_INVENTORY; ++i) {
+		if (sd->inventory.u.items_inventory[i].nameid == nameid &&
+		    sd->inventory.u.items_inventory[i].amount > 0)
+			return pc_useitem(sd, i) ? 1 : 0;
+	}
+	return 0;
+}
+
+static int64_t api_pc_get_reg(map_session_data* sd, const char* name)
+{
+	if (!sd || !name)
+		return 0;
+	int64 reg = reference_uid(add_str(name), 0);
+	return static_cast<int64_t>(pc_readregistry(sd, reg));
+}
+
+static void api_pc_set_reg(map_session_data* sd, const char* name, int64_t val)
+{
+	if (!sd || !name)
+		return;
+	int64 reg = reference_uid(add_str(name), 0);
+	pc_setregistry(sd, reg, static_cast<int64>(val));
+}
+
 // ============================================================
 // Mob API wrappers
 // ============================================================
@@ -577,6 +607,10 @@ static map_session_data* api_bl_as_sd(block_list* bl)
 	return (bl && bl->type == BL_PC) ? static_cast<map_session_data*>(bl) : nullptr;
 }
 
+static int32_t api_bl_get_id(block_list* bl) { return bl ? bl->id : 0; }
+static int16_t api_bl_get_x (block_list* bl) { return bl ? bl->x  : 0; }
+static int16_t api_bl_get_y (block_list* bl) { return bl ? bl->y  : 0; }
+
 // ============================================================
 // Item API wrappers
 // ============================================================
@@ -667,6 +701,19 @@ static int32_t api_skill_use_id(map_session_data* sd, uint16_t skill_id,
 {
 	block_list* bl = static_cast<block_list*>(sd);
 	return unit_skilluse_id(bl, target_id, skill_id, skill_lv);
+}
+
+// ============================================================
+// Unit API wrappers
+// ============================================================
+
+static int32_t api_unit_attack(map_session_data* sd, int32_t target_id,
+                               int32_t continuous)
+{
+	if (!sd)
+		return 0;
+	block_list* bl = static_cast<block_list*>(sd);
+	return static_cast<int32_t>(unit_attack(bl, target_id, continuous));
 }
 
 // ============================================================
@@ -1278,6 +1325,9 @@ static plugin_api_t s_api = {
 		api_pc_get_npc_menu,
 		api_pc_get_npc_amount,
 		api_pc_get_npc_str,
+		api_pc_use_item,
+		api_pc_get_reg,
+		api_pc_set_reg,
 	},
 
 	// mob sub-struct
@@ -1317,6 +1367,9 @@ static plugin_api_t s_api = {
 	{
 		api_bl_get_type,
 		api_bl_as_sd,
+		api_bl_get_id,
+		api_bl_get_x,
+		api_bl_get_y,
 	},
 
 	// item_api sub-struct
@@ -1356,6 +1409,11 @@ static plugin_api_t s_api = {
 		api_skill_get_name,
 		api_skill_get_inf,
 		api_skill_name2id,
+	},
+
+	// unit sub-struct
+	{
+		api_unit_attack,
 	},
 
 	// storage sub-struct
